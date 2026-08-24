@@ -1,0 +1,35 @@
+# ── Large binary / audio data ────────────────────────────────────────────────
+benchmark_audio/
+data/
+
+# ── Model file (125 MB — download with curl from fbaipublicfiles) ─────────────
+research/lid.176.bin
+
+# ── Python virtual environments ──────────────────────────────────────────────
+.venv-lid/
+.venv-lid312/
+__pycache__/
+*.pyc
+*.pyo
+
+# ── Per-request result records and raw API responses (aggregate results in final_benchmark_results.*) ──
+research/pilot_results/pilot_001/records/
+research/pilot_results/pilot_001/raw/
+
+# ── Run log files ─────────────────────────────────────────────────────────────
+research/run_benchmark_stdout.log
+research/run_postprocess_stdout.log
+
+# ── Claude Code local settings (personal permissions) ─────────────────────────
+.claude/settings.local.json
+
+# ── Scratch / exploratory audio files ─────────────────────────────────────────
+*.mp3
+
+# ── ksc_extracted (empty working directory) ──────────────────────────────────
+research/ksc_extracted/
+
+# ── OS / editor artifacts ─────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp

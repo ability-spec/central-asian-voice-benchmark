@@ -1,0 +1,125 @@
+{
+  "run_id": "pilot_001",
+  "benchmark_version": "1.0",
+  "n_pilot_per_lang": 20,
+  "uz_utterance_ids": [
+    "1126542829_1_33727_1",
+    "1131474547_2_29207_1",
+    "1131474547_2_29209_1",
+    "1131474547_2_29212_1",
+    "1131474547_2_29215_1",
+    "1131474547_2_29219_1",
+    "1131474547_2_29222_1",
+    "1131474547_2_30664_1",
+    "1131474547_2_30667_1",
+    "1131474547_2_30670_1",
+    "1131474547_2_30673_1",
+    "1131474547_2_30676_1",
+    "1131474547_2_30679_1",
+    "1187023182_2_34561_1",
+    "1187023182_2_35150_1",
+    "1187023182_2_35332_1",
+    "1187023182_2_35473_1",
+    "1187023182_2_35614_1",
+    "1187023182_2_36933_1",
+    "1187023182_2_37068_1"
+  ],
+  "kk_utterance_ids": [
+    "5f5af4cf7bb2c",
+    "5f5af5502428c",
+    "5f5af5cc8d547",
+    "5f5af62800b37",
+    "5f5af6725f6f5",
+    "5f5af6e5308bb",
+    "5f5af750a446b",
+    "5f5af7b24a034",
+    "5f5af82665f9d",
+    "5f5af88e2ef53",
+    "5f5efa1d9ea55",
+    "5f2b074881760",
+    "5f2b09aaea816",
+    "5f56822d95379",
+    "5f5684e2c46ac",
+    "5f5687584cff7",
+    "5f568953f3caa",
+    "5f59b85c28410",
+    "5f59bc552db69",
+    "5f59c07c44250"
+  ],
+  "utterance_selection_rule": "first_20_by_manifest_order",
+  "models": [
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "whisper-1"
+  ],
+  "conditions": [
+    "auto",
+    "hint"
+  ],
+  "expected_requests": 240,
+  "manifest_sha256": "d01408af2e04d048a44600138ac878f97b2a2372f62b9a42f2f7d0b161f34924",
+  "lid_tool": "custom_script_based_v1",
+  "lid_tool_note": "fasttext-wheel==0.9.2 BLOCKED: requires MSVC C++ build tools, unavailable on Python 3.14/Windows. Custom Unicode character analysis used for pilot. Replace with fasttext lid.176.bin for full benchmark.",
+  "preflight": {
+    "uzbek_manifest_sha256": {
+      "ok": true,
+      "detail": "actual=61b235f0d33ea57a..."
+    },
+    "kazakh_manifest_sha256": {
+      "ok": true,
+      "detail": "actual=a068cd81c958c687..."
+    },
+    "audio_manifest_sha256": {
+      "ok": true,
+      "detail": "actual=d01408af2e04d048..."
+    },
+    "utterance_counts": {
+      "ok": true,
+      "detail": "uz=300 kk=300"
+    },
+    "wav_files_600": {
+      "ok": true,
+      "detail": "uz=300 kk=300"
+    },
+    "fasttext_wheel_installed": {
+      "ok": false,
+      "detail": "BLOCKED: C++ build tools required; using custom_lid substitute"
+    },
+    "lid176bin_present": {
+      "ok": false,
+      "detail": "NOT DOWNLOADED — fasttext build failed; download manually when MSVC available"
+    },
+    "lid176bin_sha256_recorded": {
+      "ok": false,
+      "detail": "pending download"
+    },
+    "phase1_configs_consistent": {
+      "ok": true,
+      "detail": "3 Phase 1 providers, all have pricing and response_format"
+    },
+    "retry_policy_defined": {
+      "ok": true,
+      "detail": "timeout=120s, max_5xx=3"
+    },
+    "raw_responses_saved": {
+      "ok": true,
+      "detail": "every API response written to raw/<request_id>_raw.json"
+    },
+    "no_overwrite_protection": {
+      "ok": true,
+      "detail": "dedup: skip if records/<request_id>.json already exists"
+    },
+    "deterministic_request_ids": {
+      "ok": true,
+      "detail": "format: pilot_001_{model_abbrev}_{condition}_{utterance_id}"
+    },
+    "cost_tracked_per_request": {
+      "ok": true,
+      "detail": "cost_usd = duration_s / 60 * price_per_min stored in every record"
+    },
+    "failed_calls_recorded": {
+      "ok": true,
+      "detail": "errors stored as records with http_status != 200, raw_transcription=null"
+    }
+  }
+}

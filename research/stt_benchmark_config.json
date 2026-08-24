@@ -1,0 +1,358 @@
+{
+  "_meta": {
+    "document": "STT Benchmark Run Configuration",
+    "date": "2026-08-23",
+    "benchmark_version": "1.0",
+    "methodology_reference": "methodology_proposal.md (STEP 2, Revision 2)",
+    "status": "configuration_only_no_runs_executed",
+    "NEEDS_VERIFICATION_key": "Fields marked NEEDS_VERIFICATION must be confirmed before any API call"
+  },
+
+  "frozen_inputs": {
+    "uzbek_manifest": {
+      "path": "research/uzbek_benchmark_manifest.csv",
+      "sha256": "61b235f0d33ea57ad8696dfae5146117ddde4965db589762ae48c0c2f0565c70",
+      "utterance_count": 300,
+      "language": "uz",
+      "source_dataset": "ISSAI_USC_v1",
+      "license": "CC BY 4.0",
+      "contamination_risk": "MEDIUM"
+    },
+    "kazakh_manifest": {
+      "path": "research/kazakh_benchmark_manifest.csv",
+      "sha256": "a068cd81c958c687b8239a1bdc73b55586fe98f7a218b8ca51b3fda517c89507",
+      "utterance_count": 300,
+      "language": "kk",
+      "source_dataset": "ISSAI_KSC_v1.1_SLR102",
+      "license": "CC BY 4.0",
+      "contamination_risk": "MEDIUM"
+    },
+    "audio_manifest": {
+      "path": "research/audio_benchmark_manifest.csv",
+      "sha256": "d01408af2e04d048a44600138ac878f97b2a2372f62b9a42f2f7d0b161f34924",
+      "total_utterances": 600,
+      "uzbek_audio_dir": "benchmark_audio/uzbek/",
+      "kazakh_audio_dir": "benchmark_audio/kazakh/"
+    }
+  },
+
+  "audio_protocol": {
+    "format": "WAV",
+    "encoding": "PCM_16BIT_LE",
+    "sample_rate_hz": 16000,
+    "channels": 1,
+    "max_segment_duration_s": 60,
+    "loudness_normalisation": false,
+    "preprocessing": "none"
+  },
+
+  "conditions": [
+    {
+      "id": "auto",
+      "description": "No language parameter supplied — provider auto-detects",
+      "language_param": null
+    },
+    {
+      "id": "hint",
+      "description": "Correct language explicitly supplied via provider-specific mechanism",
+      "language_param": "provider_specific — see providers[].hint_mechanism"
+    }
+  ],
+
+  "providers": [
+    {
+      "provider": "openai",
+      "model": "gpt-4o-transcribe",
+      "api_endpoint": "https://api.openai.com/v1/audio/transcriptions",
+      "sdk": "openai",
+      "phase": 1,
+      "uzbek_support": "CONFIRMED_WORKING",
+      "kazakh_support": "CONFIRMED_WORKING",
+      "auto_detect_supported": true,
+      "response_format": "json",
+      "response_format_note": "verbose_json REJECTED (HTTP 400 unsupported_value) — confirmed kazakh_stt_smoke_test.md. Must use json or text. Internal model version: gpt-4o-transcribe-api-ev3.",
+      "provider_detected_language_available": false,
+      "hint_mechanism": {
+        "uzbek": {
+          "method": "prompt_field",
+          "value": "Uzbek",
+          "evidence": "CONFIRMED",
+          "note": "ISO 'uz' rejected with HTTP 400 invalid_value — confirmed in smoke test"
+        },
+        "kazakh": {
+          "method": "prompt_field",
+          "value": "Kazakh",
+          "evidence": "CONFIRMED",
+          "note": "prompt='Kazakh' confirmed working in Kazakh smoke test 2026-08-23; AUTO had one-word error; hint produced exact match to reference"
+        }
+      },
+      "timestamps_available": false,
+      "timestamps_note": "verbose_json not supported; segment timestamps unavailable for gpt-4o-transcribe",
+      "pricing_usd_per_minute": 0.006,
+      "pricing_output_tokens_per_1m": 10.00,
+      "pricing_source": "developers.openai.com/api/docs/pricing",
+      "pricing_date": "2026-08-23",
+      "evidence_source": "uzbek_stt_smoke_test.md, kazakh_stt_smoke_test.md",
+      "include_in_phase_1": true
+    },
+    {
+      "provider": "openai",
+      "model": "gpt-4o-mini-transcribe",
+      "api_endpoint": "https://api.openai.com/v1/audio/transcriptions",
+      "sdk": "openai",
+      "phase": 1,
+      "uzbek_support": "CONFIRMED_INCONSISTENT",
+      "kazakh_support": "CONFIRMED_FAIL",
+      "kazakh_failure_mode": "Produces Kyrgyz Cyrillic output for Kazakh audio in both AUTO and hint conditions. Kyrgyz-specific forms observed: 'Азыр' (Kyrgyz 'now') vs 'Қазір' (Kazakh); 'болгон' vs 'болған'; 'кызмат' vs 'қызмет'. Independent LID will likely classify output as 'ky' (Kyrgyz). Confirmed kazakh_stt_smoke_test.md 2026-08-23.",
+      "auto_detect_supported": true,
+      "response_format": "json",
+      "response_format_note": "verbose_json REJECTED (HTTP 400 unsupported_value). Internal model version: gpt-4o-mini-transcribe-api-ev3.",
+      "provider_detected_language_available": false,
+      "hint_mechanism": {
+        "uzbek": {
+          "method": "prompt_field",
+          "value": "Uzbek",
+          "evidence": "CONFIRMED",
+          "note": "ISO 'uz' rejected with HTTP 400 invalid_value"
+        },
+        "kazakh": {
+          "method": "prompt_field",
+          "value": "Kazakh",
+          "evidence": "CONFIRMED_SENT_INEFFECTIVE",
+          "note": "Hint accepted (no API error) but Kyrgyz output unchanged — confirmed kazakh_stt_smoke_test.md 2026-08-23"
+        }
+      },
+      "timestamps_available": false,
+      "timestamps_note": "verbose_json not supported",
+      "pricing_usd_per_minute": 0.003,
+      "pricing_output_tokens_per_1m": 5.00,
+      "pricing_source": "developers.openai.com/api/docs/pricing",
+      "pricing_date": "2026-08-23",
+      "evidence_source": "uzbek_stt_smoke_test.md, kazakh_stt_smoke_test.md",
+      "include_in_phase_1": true,
+      "note": "Include as comparison baseline only — CONFIRMED FAIL on Uzbek (inconsistent) and Kazakh (wrong language)"
+    },
+    {
+      "provider": "openai",
+      "model": "whisper-1",
+      "api_endpoint": "https://api.openai.com/v1/audio/transcriptions",
+      "sdk": "openai",
+      "phase": 1,
+      "uzbek_support": "CONFIRMED_FAIL",
+      "kazakh_support": "CONFIRMED_WORKING",
+      "auto_detect_supported": true,
+      "response_format": "verbose_json",
+      "response_format_note": "verbose_json CONFIRMED SUPPORTED — returns language, segments, duration, usage",
+      "provider_detected_language_available": true,
+      "hint_mechanism": {
+        "uzbek": {
+          "method": "none_available",
+          "evidence": "CONFIRMED",
+          "note": "ISO 'uz' rejected with HTTP 400 unsupported_language; no working hint found"
+        },
+        "kazakh": {
+          "method": "language_param",
+          "value": "kk",
+          "evidence": "CONFIRMED",
+          "note": "language='kk' CONFIRMED ACCEPTED (HTTP 200) in kazakh_stt_smoke_test.md 2026-08-23; detected='kazakh'; transcript identical to AUTO; no fallback needed"
+        }
+      },
+      "timestamps_available": true,
+      "response_format_for_timestamps": "verbose_json",
+      "pricing_usd_per_minute": 0.006,
+      "pricing_output_tokens_per_1m": null,
+      "pricing_source": "developers.openai.com/api/docs/pricing",
+      "pricing_date": "2026-08-23",
+      "evidence_source": "uzbek_stt_smoke_test.md, kazakh_stt_smoke_test.md",
+      "include_in_phase_1": true,
+      "note": "Negative baseline for Uzbek; CONFIRMED WORKING for Kazakh — language='kk' accepted, output correct"
+    },
+    {
+      "provider": "google_cloud",
+      "model": "chirp_2",
+      "api_endpoint": "Google Cloud Speech-to-Text v2",
+      "sdk": "google-cloud-speech",
+      "phase": 2,
+      "uzbek_support": "CLAIMED",
+      "kazakh_support": "CLAIMED",
+      "auto_detect_supported": "CLAIMED",
+      "hint_mechanism": {
+        "uzbek": {"method": "languageCode", "value": "uz-UZ", "status": "NEEDS_VERIFICATION"},
+        "kazakh": {"method": "languageCode", "value": "kk-KZ", "status": "NEEDS_VERIFICATION"}
+      },
+      "pricing_usd_per_minute": "NEEDS_VERIFICATION",
+      "blocker": "No GCP credentials configured",
+      "include_in_phase_1": false
+    },
+    {
+      "provider": "azure",
+      "model": "azure_speech_stt",
+      "phase": 2,
+      "uzbek_support": "CLAIMED",
+      "kazakh_support": "CLAIMED",
+      "auto_detect_supported": "CLAIMED",
+      "hint_mechanism": {
+        "uzbek": {"method": "speech_recognition_language", "value": "uz-UZ", "status": "NEEDS_VERIFICATION"},
+        "kazakh": {"method": "speech_recognition_language", "value": "kk-KZ", "status": "NEEDS_VERIFICATION"}
+      },
+      "pricing_usd_per_minute": "NEEDS_VERIFICATION",
+      "blocker": "No Azure subscription key; SDK not installed",
+      "include_in_phase_1": false
+    },
+    {
+      "provider": "aws_bedrock",
+      "model": "mistral.voxtral-mini-3b-2507",
+      "phase": "excluded",
+      "uzbek_support": "CONFIRMED_FAIL",
+      "kazakh_support": "UNKNOWN",
+      "evidence_source": "uzbek_stt_smoke_test.md",
+      "include_in_phase_1": false
+    },
+    {
+      "provider": "aws_bedrock",
+      "model": "mistral.voxtral-small-24b-2507",
+      "phase": "excluded",
+      "uzbek_support": "CONFIRMED_FAIL",
+      "kazakh_support": "UNKNOWN",
+      "evidence_source": "uzbek_stt_smoke_test.md",
+      "include_in_phase_1": false
+    }
+  ],
+
+  "phase_1_request_counts": {
+    "models": ["gpt-4o-transcribe", "gpt-4o-mini-transcribe", "whisper-1"],
+    "conditions": ["auto", "hint"],
+    "languages": ["uz", "kk"],
+    "utterances_per_language": 300,
+    "requests_per_model": 1200,
+    "total_phase_1_requests": 3600,
+    "hard_cap_requests": 4000,
+    "total_audio_minutes_estimate": {
+      "uzbek_minutes": 21.8,
+      "kazakh_minutes": 37.2,
+      "combined_minutes_per_model_per_condition": 59.0,
+      "combined_minutes_phase_1_all_models_both_conditions": 354.0
+    }
+  },
+
+  "retry_policy": {
+    "http_5xx": {"max_retries": 3, "backoff_seconds": [1, 2, 4]},
+    "http_429": {"max_retries": 5, "backoff_strategy": "Retry-After header or 60s"},
+    "http_4xx_not_429": {"max_retries": 0, "action": "record_as_error"},
+    "empty_or_malformed": {"max_retries": 1, "action": "record_as_error_if_still_malformed"},
+    "timeout_s": 120,
+    "timeout_action": "record_as_timeout_no_retry"
+  },
+
+  "output_schema_fields": [
+    "run_id", "call_id", "timestamp_utc", "provider", "model", "model_version",
+    "client_region", "api_region", "audio_id", "audio_sha256", "audio_duration_s",
+    "audio_format", "corpus_source", "contamination_risk", "language_condition",
+    "language_hint", "prompt", "response_format", "raw_transcription",
+    "normalized_transcription", "provider_detected_language",
+    "independent_detected_language", "dominant_script", "latency_ms",
+    "http_status", "error_type", "error_message", "retry_count",
+    "cost_usd", "cost_list_price_usd", "sdk_version", "benchmark_version"
+  ],
+
+  "normalisation_pipeline": {
+    "version": "1.0",
+    "steps": [
+      "unicode_nfc",
+      "casefold",
+      "apostrophe_normalise_to_u0027",
+      "punctuation_remove_at_word_boundaries",
+      "whitespace_collapse_to_ascii_space",
+      "NO_cross_script_transliteration"
+    ]
+  },
+
+  "evaluation_metrics": {
+    "wer": {"tool": "jiwer", "input": "normalized_transcription"},
+    "cer": {"tool": "jiwer", "input": "normalized_transcription", "level": "character"},
+    "script_accuracy": {
+      "method": "unicode_block_classification",
+      "dominance_threshold": 0.70,
+      "labels": ["latin", "cyrillic", "arabic", "mixed", "other", "empty"],
+      "expected_script": {"uz": "latin", "kk": "cyrillic"}
+    },
+    "provider_lid_accuracy": {
+      "source": "provider_detected_language",
+      "conditions": ["auto"],
+      "note": "N/A (not zero) when provider never returns detected_language"
+    },
+    "output_lid_accuracy": {
+      "source": "independent_detected_language",
+      "tool": "fasttext",
+      "tool_pip_package": "fasttext-wheel==0.9.2",
+      "tool_model_file": "lid.176.bin",
+      "tool_model_url": "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin",
+      "tool_model_hash_sha256": "RECORD_AFTER_DOWNLOAD",
+      "tool_evidence": "CONFIRMED",
+      "tool_evidence_note": "lid.176 supports both uz (Uzbek) and kk (Kazakh) — confirmed per fasttext.cc language identification docs, 2026-08-23",
+      "tool_rejected": {
+        "langdetect": "DISQUALIFIED — insufficient language coverage, does not include both uz and kk",
+        "lingua==2.2.0": "DISQUALIFIED — Uzbek (uz) not supported in 75-language set"
+      },
+      "min_words_for_lid": 10,
+      "conditions": ["auto", "hint"]
+    },
+    "hallucination_types": [
+      {
+        "type": "silence_hallucination",
+        "signal": "non_empty_output_when_audio_near_silent",
+        "detection": "automatic_rms_energy_threshold",
+        "threshold_status": "NEEDS_CALIBRATION"
+      },
+      {
+        "type": "excessive_output",
+        "signal": "word_count_gt_3x_expected_at_2.5_words_per_second",
+        "detection": "automatic_flag_human_review_required"
+      },
+      {
+        "type": "unrelated_language_output",
+        "signal": "output_in_non_turkic_language_for_central_asian_audio",
+        "detection": "semi_automatic_output_lid"
+      },
+      {
+        "type": "semantic_hallucination",
+        "signal": "correct_script_language_but_content_does_not_correspond",
+        "detection": "human_review_wer_gt_80pct_correct_script"
+      }
+    ]
+  },
+
+  "directory_structure": {
+    "benchmark/config/": "Configuration files",
+    "benchmark/raw/<run_id>/<provider>/<model>/<condition>/<language>/": "Per-call JSON records + raw provider responses",
+    "benchmark/normalized/<run_id>/": "Normalized transcript CSVs",
+    "benchmark/results/<run_id>/": "Leaderboards, confusion matrices, hallucination report, per_call_results.parquet",
+    "benchmark/logs/<run_id>/": "run.log, errors.log, cost_estimate.txt, cost_actual.txt"
+  },
+
+  "pre_run_checklist": [
+    "audio_manifest_sha256_verified",
+    "all_600_wav_files_present_and_verified",
+    "benchmark_directory_structure_created",
+    "provider_pricing_confirmed",
+    "openai_kk_language_param_tested",
+    "independent_lid_tool_selected_and_version_pinned",
+    "duplicate_prevention_cache_tested",
+    "retry_logic_tested",
+    "run_id_generated_and_logged",
+    "input_manifest_sha256_written_to_run_metadata"
+  ],
+
+  "known_confounds": [
+    "uzbek_mean_duration_4.4s_kazakh_7.4s_cross_language_wer_not_directly_comparable",
+    "usc_crowdsourced_audiobook_vs_ksc_structured_studio_mobile_collection",
+    "usc_38_speakers_skewed_vs_ksc_29_speakers_balanced",
+    "contamination_risk_MEDIUM_both_languages",
+    "differential_training_data_coverage_per_provider_unknown",
+    "openai_auto_vs_hint_asymmetry_documented_per_provider",
+    "script_accuracy_and_language_accuracy_are_separate_metrics",
+    "gpt4o_mini_kazakh_kyrgyz_conflation_confirmed_both_conditions_hint_ineffective",
+    "gpt4o_transcribe_verbose_json_unsupported_provider_detected_language_unavailable",
+    "gpt4o_mini_transcribe_verbose_json_unsupported_provider_detected_language_unavailable"
+  ]
+}
