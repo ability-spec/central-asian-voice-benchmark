@@ -64,7 +64,7 @@ Two mandatory conditions per provider/model/utterance pair, reported separately.
 | Provider | Model | Uzbek hint | Kazakh hint | Evidence |
 |---|---|---|---|---|
 | ElevenLabs | scribe_v2 | `language_code="uz"` | `language_code="kk"` | CONFIRMED from API docs |
-| Google Cloud STT | chirp_2 | `languageCode="uz-UZ"` | `languageCode="kk-KZ"` | CONFIRMED from language table |
+| Google Cloud STT | chirp_2 | `language_codes=["uz-UZ"]` | `language_codes=["kk-KZ"]` | CONFIRMED from language table (V2 API uses array, not scalar) |
 | Azure Speech | Fast Transcription | `language="uz-UZ"` | `language="kk-KZ"` | CONFIRMED from language support table |
 | Google Gemini | gemini-2.5-flash | `prompt="Transcribe in Uzbek"` | `prompt="Transcribe in Kazakh"` | CLAIMED — no formal language parameter |
 
@@ -163,6 +163,8 @@ All of the following are already defined and no changes are required:
 
 All metrics defined in `methodology_proposal.md` Sections C1–C9 apply to Phase 2 without modification:
 WER, CER, script accuracy, provider LID accuracy, output LID accuracy, language confusion matrix, hallucination taxonomy (4 types), latency (p50/p95/min/max in ms/s audio), cost per audio-minute.
+
+**Known WER limitation — numeric/word-form equivalence:** WER treats digit renderings and their spelled-out equivalents as errors even when semantically identical (e.g. `97 км` vs `тоқсан жеті километр`; `1` vs `bir`). The normalisation pipeline does not convert between forms. Affected records will show inflated WER without reflecting intelligibility failure. Analysts should flag such cases in the per-utterance review rather than treating them as unexplained high-error items. This limitation is common to all standard WER implementations and is not corrected here.
 
 ---
 

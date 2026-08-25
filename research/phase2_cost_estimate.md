@@ -44,7 +44,7 @@ Track A (FLEURS) adds approximately 650–900 utterances per language (exact siz
 
 | Provider | Model | Price per audio-minute | Pricing basis | Verified? |
 |---|---|---|---|---|
-| ElevenLabs | scribe_v2 | ~$0.054/min (effective) | 330 credits/min @ Pro plan | NEEDS_VERIFICATION for API overage rate |
+| ElevenLabs | scribe_v2 | **$0.00367/min** ($0.22/hr) | USD-billed PAYG; same rate all tiers | CONFIRMED from elevenlabs.io/pricing/api 2026-08-24 |
 | Google Cloud STT | chirp_2 | $0.021/min | $0.00035/second | CONFIRMED |
 | Azure Speech | Fast Transcription | ~$0.0167/min (~$1.00/hr) | Per hour | NEEDS_VERIFICATION — exact USD not rendered |
 | Google Gemini | gemini-2.5-flash | ~$0.00192/min | $1.00/1M tokens, 32 tok/s | CONFIRMED pricing; language support unverified |
@@ -57,23 +57,23 @@ Track A (FLEURS) adds approximately 650–900 utterances per language (exact siz
 
 | Provider | Model | Rate | Pilot cost |
 |---|---|---|---|
-| ElevenLabs | scribe_v2 | ~$0.054/min | **~$0.42** |
+| ElevenLabs | scribe_v2 | $0.00367/min | **~$0.029** |
 | Google Cloud STT | chirp_2 | $0.021/min | **$0.17** |
 | Azure Speech | Fast Transcription | ~$0.0167/min | **~$0.13** |
 | Google Gemini | gemini-2.5-flash | ~$0.00192/min | **~$0.02** |
-| **Pilot total (all 4 providers)** | | | **~$0.74** |
+| **Pilot total (all 4 providers)** | | | **~$0.34** |
 
 ### Full Track B Benchmark Cost (600 utterances, 118.04 audio-minutes per provider)
 
 | Provider | Model | Rate | Full benchmark cost |
 |---|---|---|---|
-| ElevenLabs | scribe_v2 | ~$0.054/min | **~$6.37** |
+| ElevenLabs | scribe_v2 | $0.00367/min | **~$0.43** |
 | Google Cloud STT | chirp_2 | $0.021/min | **$2.48** |
 | Azure Speech | Fast Transcription | ~$0.0167/min | **~$1.97** |
 | Google Gemini | gemini-2.5-flash | ~$0.00192/min | **~$0.23** |
-| **Track B total (all 4 providers)** | | | **~$11.05** |
+| **Track B total (all 4 providers)** | | | **~$5.11** |
 
-*Track B total with pilot included: ~$11.79*
+*Track B total with pilot included: ~$5.44*
 
 ---
 
@@ -81,11 +81,11 @@ Track A (FLEURS) adds approximately 650–900 utterances per language (exact siz
 
 | Provider | Model | Rate | Track A estimate |
 |---|---|---|---|
-| ElevenLabs | scribe_v2 | ~$0.054/min | **~$15.39** |
+| ElevenLabs | scribe_v2 | $0.00367/min | **~$1.05** |
 | Google Cloud STT | chirp_2 | $0.021/min | **$5.99** |
 | Azure Speech | Fast Transcription | ~$0.0167/min | **~$4.76** |
 | Google Gemini | gemini-2.5-flash | ~$0.00192/min | **~$0.55** |
-| **Track A total (all 4 providers)** | | | **~$26.69** |
+| **Track A total (all 4 providers)** | | | **~$12.35** |
 
 *These are rough estimates. Recalculate with actual FLEURS audio durations after download.*
 
@@ -96,9 +96,9 @@ Track A (FLEURS) adds approximately 650–900 utterances per language (exact siz
 | Component | Estimated cost |
 |---|---|
 | Pilot (all 4 providers, Track B only) | ~$0.74 |
-| Track B full (all 4 providers) | ~$11.05 |
-| Track A full (all 4 providers, FLEURS) | ~$26.69 |
-| **Phase 2 total** | **~$38.48** |
+| Track B full (all 4 providers) | ~$5.11 |
+| Track A full (all 4 providers, FLEURS) | ~$12.35 |
+| **Phase 2 total** | **~$17.80** |
 
 ---
 
@@ -108,22 +108,22 @@ Worst case — all providers succeed, both tracks run fully, Gemini included:
 
 | Source | Cost |
 |---|---|
-| Track B (4 providers × 118 min) | $11.05 |
-| Track A (4 providers × 285 min, estimate) | $26.69 |
-| Retries (10% overhead on full runs) | ~$3.77 |
-| ElevenLabs overage rate uncertainty (2× safety factor on ElevenLabs) | +$6.37 |
-| Azure pricing uncertainty (1.5× safety factor on Azure) | +$0.99 |
-| **Maximum possible Phase 2 cost** | **~$48.87** |
+| Track B (4 providers × 118 min) | $5.11 |
+| Track A (4 providers × 285 min, estimate) | $12.35 |
+| Retries (10% overhead on full runs) | ~$1.75 |
+| ElevenLabs rate confirmed; no safety factor needed | +$0.00 |
+| Azure pricing unverified (1.5× safety factor on Azure) | +$0.99 |
+| **Maximum possible Phase 2 cost** | **~$20.20** |
 
 ---
 
 ## Recommended Spending Cap
 
-**Hard cap: $60.00 for all of Phase 2.**
+**Hard cap: $60.00 for all of Phase 2.** (Unchanged — now provides much larger headroom.)
 
 Rationale:
-- Maximum possible cost estimate is ~$49.
-- $60 cap provides $11 headroom (~22%) for pricing changes, retries, Gemini smoke test, and FLEURS duration underestimates.
+- Maximum possible cost estimate revised to ~$20 (down from ~$49) after ElevenLabs pricing correction.
+- $60 cap provides ~$40 headroom for pricing changes, retries, Gemini smoke test, and FLEURS duration underestimates.
 - The cap is consistent with a no-surprises solo research budget.
 - If Track A FLEURS audio turns out substantially longer than estimated (e.g. Kazakh average duration >> 7 s), recalculate before authorising Track A runs.
 
@@ -146,7 +146,7 @@ If budget is constrained, priority order:
 
 | Item | Status |
 |---|---|
-| ElevenLabs API overage rate (per-minute for PAYG) | NEEDS_VERIFICATION at `elevenlabs.io/pricing/api` |
+| ElevenLabs API rate (PAYG) | CONFIRMED: $0.22/hr = $0.00367/min |
 | Azure Fast Transcription exact per-hour price | NEEDS_VERIFICATION via Azure pricing calculator |
 | Google Cloud Chirp regional pricing differences | NEEDS_VERIFICATION (us vs eu vs asia regions) |
 | Gemini 2.5 Flash rate limits (RPM/TPM) | NEEDS_VERIFICATION at `aistudio.google.com/rate-limit` |

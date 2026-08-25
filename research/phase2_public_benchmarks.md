@@ -20,10 +20,10 @@ Paper: Conneau et al. (2022), "FLEURS: Few-Shot Learning Evaluation of Universal
 ### Dataset Statistics
 | Language | Total rows (all splits) | Test split rows |
 |---|---|---|
-| Uzbek (`uz_uz`) | ~4,170 | ~862 (from HuggingFace viewer) |
-| Kazakh (`kk_kz`) | ~4,430 | NEEDS_VERIFICATION (viewer truncated) |
+| Uzbek (`uz_uz`) | ~4,170 | **862** (CONFIRMED — Python download 2026-08-24) |
+| Kazakh (`kk_kz`) | ~4,430 | **856** (CONFIRMED — Python download 2026-08-24) |
 
-*Note: row counts from HuggingFace dataset viewer 2026-08-24. The general FLEURS literature reports approximately 647 test examples per language; the Uzbek viewer showed 862. Authoritative counts require `len(load_dataset("google/fleurs", "uz_uz")["test"])` after download.*
+*Note: test split counts verified by downloading both splits and running `len(ds)` via Python 3.14 / datasets 5.0.1 on 2026-08-24.*
 
 ### Audio Format
 - Format: FLAC (stored as Parquet in HuggingFace dataset files)

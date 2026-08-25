@@ -90,12 +90,15 @@ Full supported language list (90+ languages) includes: Uzbek, Kazakh, Russian, K
 - WAV/PCM at 16 kHz mono is directly compatible with our frozen benchmark format
 
 ### Pricing
-330 credits per audio-minute. Credit cost depends on plan tier. API overage rate: NEEDS_VERIFICATION from `https://elevenlabs.io/pricing/api`.
+API usage is billed in USD, not credits. The credit system applies to bundled plan allowances only.
 
-Approximate effective rates based on bundled plan credit costs:
-- Pro ($99/month, 600k credits): ~$0.054/min
-- Scale ($299/month, 1.8M credits): ~$0.055/min
-- Pay-as-you-go overage: NEEDS_VERIFICATION
+| Tier | Rate | Evidence |
+|---|---|---|
+| PAYG and all subscription tiers | **$0.22/hour = $0.00367/min** | CONFIRMED from `elevenlabs.io/pricing/api` 2026-08-24 |
+| Entity detection add-on | +$0.07/hr | CONFIRMED |
+| Keyterm prompting add-on | +$0.05/hr | CONFIRMED |
+
+*Prior estimate of $0.054/min was based on a credit-cost calculation and was incorrect by ~15×.*
 
 ### Rate Limits
 Concurrency for `scribe_v2` batch: `min(4, ceil(audio_duration_secs / 480))`. Files over 8 minutes are chunked into up to 4 parallel segments.
@@ -145,10 +148,11 @@ Three active Chirp models with regional availability:
 No `latest_long`, `latest_short`, `telephony`, or standard model variants support uz-UZ or kk-KZ.
 
 ### AUTO / HINT Mechanism
-- Language hint parameter: `languageCode` (BCP-47 format)
-- Uzbek hint: `languageCode="uz-UZ"`
-- Kazakh hint: `languageCode="kk-KZ"`
-- AUTO: `auto_decoding_config` available in V2 API — CLAIMED, not yet verified against Uzbek/Kazakh
+- Language hint parameter: `language_codes` (array, BCP-47 format) — V2 API
+- Uzbek hint: `language_codes=["uz-UZ"]`
+- Kazakh hint: `language_codes=["kk-KZ"]`
+- AUTO (language): `language_codes=["auto"]` — NEEDS_VERIFICATION for uz-UZ/kk-KZ
+- `auto_decoding_config` (`AutoDetectDecodingConfig()`): audio format detection only — not language detection
 
 ### Audio Format
 Standard Google Cloud STT accepts WAV, FLAC, MP3, OGG, and others. WAV PCM 16 kHz mono is supported. NEEDS_VERIFICATION of exact format requirements for Chirp models specifically.

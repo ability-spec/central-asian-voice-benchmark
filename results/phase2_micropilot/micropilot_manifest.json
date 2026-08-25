@@ -1,0 +1,67 @@
+{
+  "micropilot_version": "1",
+  "created": "2026-08-24",
+  "selection_seed": 42,
+  "selection_method": "stratified_random_by_duration_tier",
+  "duration_tiers": {"short": "<8s", "medium": "8-15s"},
+  "utterances_per_language": 2,
+  "total_utterances": 4,
+  "conditions": ["auto", "hint"],
+  "requests_per_provider": 8,
+  "total_audio_seconds": 31.80,
+  "total_audio_minutes": 0.5300,
+  "audio_minutes_per_provider": 1.0600,
+  "cost_estimates_usd": {
+    "elevenlabs_scribe_v2": 0.00389,
+    "google_cloud_stt_chirp_2": 0.04200,
+    "total_two_providers": 0.04589,
+    "hard_cap": 2.00,
+    "within_cap": true
+  },
+  "utterances": [
+    {
+      "utterance_id": "1428043076_2_33681_1",
+      "language": "uz",
+      "language_bcp47": "uz-UZ",
+      "duration_seconds": 7.86,
+      "duration_tier": "short",
+      "reference_transcript": "yaqinda siz bizning shou rumimizga tashrif buyurib zavod mashg'ulotlari bilan batafsil tanishishingiz mumkin bo'ladi",
+      "canonical_audio_path": "benchmark_audio/uzbek/1428043076_2_33681_1.wav",
+      "gcs_billed_seconds": 15,
+      "gcs_cost_per_call_usd": 0.00525
+    },
+    {
+      "utterance_id": "1126542829_1_33727_1",
+      "language": "uz",
+      "language_bcp47": "uz-UZ",
+      "duration_seconds": 9.62,
+      "duration_tier": "medium",
+      "reference_transcript": "fojia oqibatida halok bo'lganlarga to'lanishi kerak bo'lgan to'lov pullarini hisoblash jarayonlari davom etmoqda",
+      "canonical_audio_path": "benchmark_audio/uzbek/1126542829_1_33727_1.wav",
+      "gcs_billed_seconds": 15,
+      "gcs_cost_per_call_usd": 0.00525
+    },
+    {
+      "utterance_id": "5f59e92ec3630",
+      "language": "kk",
+      "language_bcp47": "kk-KZ",
+      "duration_seconds": 4.61,
+      "duration_tier": "short",
+      "reference_transcript": "құрылыс компаниясы және жобаны құраушы азаматтар осында келеді",
+      "canonical_audio_path": "benchmark_audio/kazakh/5f59e92ec3630.wav",
+      "gcs_billed_seconds": 15,
+      "gcs_cost_per_call_usd": 0.00525
+    },
+    {
+      "utterance_id": "5fa397a08468a",
+      "language": "kk",
+      "language_bcp47": "kk-KZ",
+      "duration_seconds": 9.71,
+      "duration_tier": "medium",
+      "reference_transcript": "аудан орталығы қандыағаш қаласынан оңтүстікке қарай тоқсан жеті километр жерде жем өзені жағалауында орналасқан",
+      "canonical_audio_path": "benchmark_audio/kazakh/5fa397a08468a.wav",
+      "gcs_billed_seconds": 15,
+      "gcs_cost_per_call_usd": 0.00525
+    }
+  ]
+}

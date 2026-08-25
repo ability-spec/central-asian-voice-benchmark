@@ -1,0 +1,21 @@
+{
+  "run_id": "phase2_trackb_20260825T030308",
+  "benchmark_version": "phase2_trackb_v1",
+  "timestamp_utc": "2026-08-25T03:03:09.791516+00:00",
+  "hard_cap": 12.0,
+  "manifest_sha256": "d01408af2e04d048a44600138ac878f97b2a2372f62b9a42f2f7d0b161f34924",
+  "utterance_count": 600,
+  "providers": [
+    "elevenlabs/scribe_v2",
+    "google_cloud_stt/chirp_2"
+  ],
+  "conditions": [
+    "auto",
+    "hint"
+  ],
+  "gcs_region": "asia-southeast1",
+  "el_rate_per_min": 0.00367,
+  "gcs_rate_per_sec": 0.00035,
+  "gcs_billing_increment_s": 15,
+  "prior_committed_spend": 0.0
+}

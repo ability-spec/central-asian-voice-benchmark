@@ -68,15 +68,15 @@
         "compatible_with_frozen_benchmark": true
       },
       "pricing": {
-        "unit": "credits_per_minute",
-        "credits_per_minute": 330,
-        "effective_rate_per_minute_usd_approx": 0.054,
-        "effective_rate_evidence": "NEEDS_VERIFICATION",
-        "effective_rate_note": "Approximated from Pro plan (600k credits/$99). Verify API overage rate at elevenlabs.io/pricing/api",
+        "unit": "usd_per_hour",
+        "rate_per_hour_usd": 0.22,
+        "effective_rate_per_minute_usd": 0.00367,
+        "effective_rate_evidence": "CONFIRMED",
+        "effective_rate_source": "elevenlabs.io/pricing/api fetched 2026-08-24",
+        "rate_note": "Flat USD rate across all tiers including PAYG; credits system applies only to bundled plan allowances",
         "surcharges": {
-          "entity_detection_redaction": "+30%",
-          "speaker_role_detection": "+10%",
-          "keyterms_100plus": "20s minimum billable"
+          "entity_detection": "+$0.07/hr",
+          "keyterm_prompting": "+$0.05/hr"
         }
       },
       "rate_limits": {
@@ -144,10 +144,13 @@
         "hint": {
           "supported": true,
           "evidence": "CONFIRMED",
-          "parameter_name": "languageCode",
-          "uzbek_value": "uz-UZ",
-          "kazakh_value": "kk-KZ",
-          "api_version": "V2"
+          "parameter_name": "language_codes",
+          "parameter_type": "array",
+          "uzbek_value": ["uz-UZ"],
+          "kazakh_value": ["kk-KZ"],
+          "auto_value": ["auto"],
+          "api_version": "V2",
+          "note": "V2 API uses language_codes array; auto_decoding_config is for audio format only, not language detection"
         }
       },
       "audio_requirements": {
@@ -363,7 +366,8 @@
       "kazakh_present_evidence": "CONFIRMED",
       "uzbek_test_rows": 862,
       "uzbek_test_rows_evidence": "CONFIRMED from HuggingFace viewer 2026-08-24",
-      "kazakh_test_rows": "NEEDS_VERIFICATION",
+      "kazakh_test_rows": 856,
+      "kazakh_test_rows_evidence": "CONFIRMED from Python download 2026-08-24",
       "kazakh_total_rows": 4430,
       "audio_format": "FLAC",
       "sample_rate_hz": 16000,
@@ -386,11 +390,11 @@
     "total_requests_per_provider": 80,
     "total_audio_minutes_per_provider": 7.86,
     "cost_estimates": {
-      "elevenlabs_scribe_v2": {"usd_approx": 0.42, "evidence": "NEEDS_VERIFICATION"},
+      "elevenlabs_scribe_v2": {"usd_approx": 0.029, "evidence": "CONFIRMED pricing"},
       "google_cloud_stt_chirp_2": {"usd": 0.17, "evidence": "CONFIRMED pricing"},
       "azure_speech_fast": {"usd_approx": 0.13, "evidence": "NEEDS_VERIFICATION"},
       "google_gemini_2_5_flash": {"usd_approx": 0.02, "evidence": "CONFIRMED pricing; language support unverified"},
-      "total_all_providers_approx": 0.74
+      "total_all_providers_approx": 0.34
     }
   },
   "full_benchmark_track_b": {
@@ -398,11 +402,11 @@
     "total_requests_per_provider": 1200,
     "total_audio_minutes_per_provider": 118.04,
     "cost_estimates": {
-      "elevenlabs_scribe_v2": {"usd_approx": 6.37, "evidence": "NEEDS_VERIFICATION"},
+      "elevenlabs_scribe_v2": {"usd_approx": 0.43, "evidence": "CONFIRMED pricing"},
       "google_cloud_stt_chirp_2": {"usd": 2.48, "evidence": "CONFIRMED pricing"},
       "azure_speech_fast": {"usd_approx": 1.97, "evidence": "NEEDS_VERIFICATION"},
       "google_gemini_2_5_flash": {"usd_approx": 0.23, "evidence": "CONFIRMED pricing; language support unverified"},
-      "total_all_providers_approx": 11.05
+      "total_all_providers_approx": 5.11
     }
   },
   "spending_cap": {
