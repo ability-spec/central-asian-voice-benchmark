@@ -207,6 +207,34 @@ The notebook auto-detects whether it is running on Kaggle (checks for `/kaggle/i
 
 ---
 
+## Data License and Attribution
+
+The JSONL result files in this package include `reference_transcript` fields containing verbatim text from two publicly released speech corpora. Both are licensed under **Creative Commons Attribution 4.0 International (CC BY 4.0)**, which permits redistribution for any purpose with attribution. Reference transcripts are used verbatim and unmodified.
+
+### ISSAI Uzbek Speech Corpus (USC)
+
+| Field | Detail |
+|---|---|
+| Corpus | ISSAI USC v1 |
+| Dataset | `murodbek/uzbek-speech-corpus` (HuggingFace, split: test) |
+| Paper | arXiv:2107.14419 |
+| License | **CC BY 4.0** |
+| Attribution | Institute of Smart Systems and Artificial Intelligence (ISSAI), Nazarbayev University |
+
+### ISSAI Kazakh Speech Corpus (KSC)
+
+| Field | Detail |
+|---|---|
+| Corpus | ISSAI KSC v1.1 (335RS) |
+| Dataset | OpenSLR SLR102 — openslr.org/102 |
+| Paper | Khassanov et al., EACL 2021 |
+| License | **CC BY 4.0** (confirmed in EACL 2021 paper text and ISSAI website; the HuggingFace card for `issai/kazakh_speech_corpus` erroneously states MIT — the paper and ISSAI website are authoritative) |
+| Attribution | Institute of Smart Systems and Artificial Intelligence (ISSAI), Nazarbayev University |
+
+**License text:** https://creativecommons.org/licenses/by/4.0/
+
+---
+
 ## Repository
 
 Source repository (not required for reproduction): benchmark runners, manifest preparation scripts, and methodology documentation are included in the source repo. This publication package contains only the files required to reproduce the analysis.
