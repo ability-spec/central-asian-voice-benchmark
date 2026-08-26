@@ -1,6 +1,9 @@
 # ── Large binary / audio data ────────────────────────────────────────────────
 benchmark_audio/
 data/
+# Exception: Kaggle publication package includes small JSONL result files
+!/research/kaggle/data/
+!/research/kaggle/data/**
 
 # ── Model file (125 MB — download with curl from fbaipublicfiles) ─────────────
 research/lid.176.bin
