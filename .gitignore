@@ -32,7 +32,10 @@ research/run_postprocess_stdout.log
 # ── ksc_extracted (empty working directory) ──────────────────────────────────
 research/ksc_extracted/
 
-# ── OS / editor artifacts ─────────────────────────────────────────────────────
+# ── OS / editor artifacts ──────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 *.swp
+
+# ── Product secrets ────────────────────────────────────────────────────────────
+product/backend/.env

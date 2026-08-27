@@ -244,3 +244,46 @@ Source repository (not required for reproduction): benchmark runners, manifest p
 - `data/phase3a_trackb_results.jsonl` — Phase 3A benchmark results (400 successful + 68 historical errors)
 
 These files are read-only research artifacts. Do not modify them.
+
+---
+
+## Publication figures (Kaggle research hub)
+
+The benchmark ships a polished, data-driven figure set for the Kaggle notebook /
+research hub, generated **from the frozen JSONL only** (no API calls, no spend,
+no edits to source data). All numbers are recomputed at generation time and
+cross-checked by `research/visualizations/verify_publication.py` (55/55) and
+`verify_against_report.py` (41/41).
+
+The generation scripts live in `research/visualizations/`:
+- `make_publication_figures.py` → writes `figures/publication/*.png|svg|pdf`
+- `make_figures.py` → canonical report-aligned figures in `figures/`
+- `data.py` — all numbers computed here from the frozen JSONL
+- `verify_publication.py`, `verify_against_report.py` — traceability gates
+
+Nine publication figures (all in `research/visualizations/figures/publication/`):
+
+| Figure | Topic | Honesty tag |
+|---|---|---|
+| `00_benchmark_overview` | Executive one-pager: KPIs, phase map, key finding, scope | scope-limited to uz/kk |
+| `01_provider_comparison` | Model/provider comparison (Phase 2 + 3A) | both phases labelled |
+| `02_uzbek_vs_kazakh_detection` | Uzbek vs Kazakh language detection | descriptive |
+| `03_auto_vs_hint` | AUTO vs HINT paired analysis | **SECONDARY** |
+| `04_routed_vs_hint` | ROUTED vs HINT (R1 routing) | **PRIMARY (null)** |
+| `05_cost_vs_wer` | Accuracy vs cost per call | descriptive |
+| `06_latency_vs_wer` | Latency vs WER (per-utterance) | descriptive |
+| `07_error_analysis` | WER ≥ 1.0, apostrophe confound, failure taxonomy | diagnostic |
+| `08_reproducibility` | Dataset integrity, PASS ledger, provenance SHA | — |
+
+To refresh the figures locally before publishing to Kaggle:
+
+```bash
+cd research/visualizations
+.venv/Scripts/python.exe verify_against_report.py     # 41/41
+.venv/Scripts/python.exe verify_publication.py         # 55/55
+.venv/Scripts/python.exe make_publication_figures.py   # write figures/publication/
+```
+
+Then upload the refreshed `figures/publication/*.png` into the Kaggle dataset /
+notebook as the analysis gallery. Every figure filename encodes its subject so
+the hub stays in sync with the frozen results.

@@ -287,3 +287,154 @@ def latency_phase3a():
                    "mean_dur": mean(x[0] for x in v),
                    "mean_lat": mean(x[1] for x in v)}
             for lang, v in by_lang.items()}
+
+
+# =====================================================================
+# Extended read-only helpers for the publication / Kaggle hub figures.
+# None of these write to results/; every value is computed from frozen
+# JSONL at figure-generation time.
+# =====================================================================
+
+def phase3a_all_records():
+    """All Phase 3A records (including historical error records)."""
+    return load_phase3a()
+
+
+def phase3a_error_records():
+    """Error / non-success records (http_status != 200 or wer missing)."""
+    return [r for r in load_phase3a()
+            if r.get("http_status") != 200 or r.get("wer") is None]
+
+
+def phase3a_records_raw():
+    """All Phase 3A records as-is (no filtering)."""
+    return load_phase3a()
+
+
+def cost_phase2():
+    """Mean + total cost (USD) per provider for Phase 2 successful records."""
+    recs = load_phase2()
+    out = {}
+    for r in recs:
+        out.setdefault(r["provider"], []).append(r.get("cost_usd") or 0.0)
+    return {p: {"mean": mean(v), "total": sum(v), "n": len(v)}
+            for p, v in out.items()}
+
+
+def cost_phase3a_eval():
+    """Mean + total cost per condition for Phase 3A evaluation records."""
+    recs = phase3a_eval(load_phase3a())
+    out = {}
+    for r in recs:
+        key = (r["language"], r["language_condition"])
+        out.setdefault(key, []).append(r.get("cost_usd") or 0.0)
+    return {(l, c): {"mean": mean(v), "total": sum(v), "n": len(v)}
+            for (l, c), v in out.items()}
+
+
+def latency_wer_records(phase="phase3a_eval"):
+    """Per-record (latency_ms, wer, language, condition) tuples for scatter."""
+    if phase == "phase3a_eval":
+        recs = phase3a_eval(load_phase3a())
+    elif phase == "phase2":
+        recs = load_phase2()
+    else:
+        raise ValueError(phase)
+    out = []
+    for r in recs:
+        out.append({
+            "latency_ms": r["latency_ms"],
+            "wer": r["wer"],
+            "language": r["language"],
+            "condition": r["language_condition"],
+            "provider": r["provider"],
+        })
+    return out
+
+
+def duration_tier(dur_s):
+    if dur_s is None:
+        return "unknown"
+    if dur_s < 5:
+        return "short"
+    if dur_s < 10:
+        return "medium"
+    return "long"
+
+
+def error_records_wer_ge_1(eval_only=True):
+    """WER >= 1.0 records, optionally restricted to the evaluation split."""
+    recs = phase3a_eval(load_phase3a()) if eval_only else load_phase3a()
+    return [r for r in recs if r.get("wer") is not None and r["wer"] >= 1.0]
+
+
+def apostrophe_confound_uzbek_hint():
+    """Uzbek HINT evaluation records flagged for apostrophe stripping.
+
+    Per report §13, references containing an apostrophe where the hypothesis
+    drops it. Returns (stripped_records, ref_apostrophe_count, n_apostrophe_absent).
+    Each record dict includes: uid, wer, auto_wer, ref_has_apos, hyp_has_apos.
+    """
+    recs = phase3a_eval(load_phase3a())
+    uz_hint = [r for r in recs
+               if r["language"] == "uz" and r["language_condition"] == "hint"]
+    pairs = pair_by_utterance(recs)
+    stripped = []
+    ref_apos = 0
+    for r in uz_hint:
+        ref = r.get("reference_transcript", "")
+        hyp = r.get("normalized_transcription", "")
+        has_ref = ("'" in ref) or ("\u2019" in ref) or ("\u02bc" in ref)
+        if has_ref:
+            ref_apos += 1
+        has_hyp = ("'" in hyp) or ("\u2019" in hyp) or ("\u02bc" in hyp)
+        if has_ref and not has_hyp:
+            auto_wer = pairs.get(r["utterance_id"], {}).get("auto", {}).get("wer")
+            stripped.append({
+                "uid": r["utterance_id"],
+                "wer": r["wer"],
+                "auto_wer": auto_wer,
+                "ref_has_apos": True,
+                "hyp_has_apos": False,
+            })
+    return stripped, ref_apos
+
+
+def reproducibility_counts():
+    """Dataset-integrity counts computed from frozen JSONL (report §8)."""
+    p3a = load_phase3a()
+    p2 = load_jsonl(P2_JSONL)
+    eval_recs = phase3a_eval(p3a)
+    pilot = [r for r in p3a if r.get("is_pilot") is True]
+    err = [r for r in p3a if r.get("http_status") != 200 or r.get("wer") is None]
+    dup_auto = [r for r in eval_recs if r["language_condition"] == "auto"]
+    dup_hint = [r for r in eval_recs if r["language_condition"] == "hint"]
+    auto_keys = {(r["utterance_id"], r["language_condition"]) for r in dup_auto}
+    hint_keys = {(r["utterance_id"], r["language_condition"]) for r in dup_hint}
+    return {
+        "p3a_total": len(p3a),
+        "p3a_successful": len([r for r in p3a if r.get("wer") is not None]),
+        "p3a_historical_error": len(err),
+        "p3a_dup_auto": len(auto_keys),
+        "p3a_dup_hint": len(hint_keys),
+        "p3a_pilot": len(pilot),
+        "p3a_eval": len(eval_recs),
+        "p3a_eval_auto": len(dup_auto),
+        "p3a_eval_hint": len(dup_hint),
+        "p3a_uz_eval": len([r for r in eval_recs
+                            if r["language"] == "uz"]),
+        "p3a_kk_eval": len([r for r in eval_recs
+                            if r["language"] == "kk"]),
+        "p2_total": len(p2),
+        "p2_successful": len(load_phase2()),
+    }
+
+
+def file_sha256(path):
+    """SHA-256 of a results file (read-only)."""
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
