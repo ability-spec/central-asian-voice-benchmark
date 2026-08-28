@@ -39,3 +39,8 @@ Thumbs.db
 
 # ── Product secrets ────────────────────────────────────────────────────────────
 product/backend/.env
+
+# ── Product runtime / virtual environment ──────────────────────────────────────
+product/backend/.venv/
+uploads/
+audio_output/

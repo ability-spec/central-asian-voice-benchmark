@@ -1,0 +1,9 @@
+# Central Asian Voice AI — Backend Dependencies
+# Install: pip install -r product/backend/requirements.txt
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+python-multipart>=0.0.20
+python-dotenv>=1.1.0
+openai>=1.60.0
+pydantic>=2.0.0
