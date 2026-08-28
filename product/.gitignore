@@ -1,0 +1,6 @@
+# Secret API keys — do not commit
+product/backend/.env
+uploads/
+audio_output/
+__pycache__/
+*.pyc
