@@ -149,7 +149,7 @@ async def handle_turn(
         await _to_wav(raw_path, wav_path)
     except Exception as e:
         logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
-        raise HTTPException(status_code=422, detail=f"Audio conversion failed: {str(e)}")
+        raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
 
     # --- 6. STT ---
     t0 = time.time()
@@ -157,7 +157,7 @@ async def handle_turn(
         transcript = transcribe(wav_path, language, "audio/wav")
     except Exception as e:
         logger.error("[%s] STT failed: %s", request_id, str(e))
-        raise HTTPException(status_code=502, detail=f"STT failed: {str(e)}")
+        raise HTTPException(status_code=502, detail="Speech transcription failed. Please try again.")
     stt_time = time.time() - t0
     logger.info("[%s] STT (%s): %.2fs | transcript=%r", request_id, language, stt_time, transcript[:80])
 
@@ -167,7 +167,7 @@ async def handle_turn(
         response_text = respond(conversation_id, transcript, language)
     except Exception as e:
         logger.error("[%s] LLM failed: %s", request_id, str(e))
-        raise HTTPException(status_code=502, detail=f"LLM failed: {str(e)}")
+        raise HTTPException(status_code=502, detail="Response generation failed. Please try again.")
     llm_time = time.time() - t0
     logger.info("[%s] LLM (%s): %.2fs | response=%r", request_id, language, llm_time, response_text[:80])
 
@@ -177,7 +177,7 @@ async def handle_turn(
         audio_b64 = synthesize_b64(response_text, language)
     except Exception as e:
         logger.error("[%s] TTS failed: %s", request_id, str(e))
-        raise HTTPException(status_code=502, detail=f"TTS failed: {str(e)}")
+        raise HTTPException(status_code=502, detail="Audio synthesis failed. Please try again.")
     tts_time = time.time() - t0
     logger.info("[%s] TTS: %.2fs | audio size=%d bytes", request_id, tts_time, len(audio_b64))
 
