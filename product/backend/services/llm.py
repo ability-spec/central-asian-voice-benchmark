@@ -8,7 +8,7 @@ Generates conversational response in the same language as user input.
 import logging
 from typing import Optional
 
-from openai import OpenAI
+from openai import OpenAI, APIError
 
 from product.backend.config import settings
 from product.backend.services.session import session_manager
@@ -66,21 +66,27 @@ def _openai_respond(
     # Add current user input
     messages.append({"role": "user", "content": transcript})
 
-    response = client.chat.completions.create(
-        model=settings.llm_model,
-        messages=messages,
-        max_tokens=300,
-        temperature=0.7,
-        timeout=30.0,
-    )
-
-    reply = response.choices[0].message.content.strip()
-
-    # Store both sides
-    session_manager.add_turn(conversation_id, "user", transcript)
-    session_manager.add_turn(conversation_id, "assistant", reply)
-
-    return reply
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=settings.llm_model,
+                messages=messages,
+                max_tokens=300,
+                temperature=0.7,
+                timeout=30.0,
+            )
+            reply = response.choices[0].message.content.strip()
+            # Store both sides only on success
+            session_manager.add_turn(conversation_id, "user", transcript)
+            session_manager.add_turn(conversation_id, "assistant", reply)
+            return reply
+        except APIError as e:
+            last_err = e
+            logger.warning("LLM attempt %d failed: %s", attempt + 1, e)
+            if attempt == 1:
+                raise last_err
+    return ""  # unreachable
 
 
 # ---------- Public API ----------

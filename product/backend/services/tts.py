@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from openai import OpenAI
+from openai import OpenAI, APIError
 
 from product.backend.config import settings
 
@@ -54,15 +54,23 @@ def _openai_synthesize(text: str, language: str) -> bytes:
     """Generate speech audio from text using OpenAI TTS API."""
     client = OpenAI(api_key=settings.openai_api_key, timeout=30.0)
 
-    response = client.audio.speech.create(
-        model=settings.tts_model,
-        voice=settings.tts_voice,
-        input=text,
-        response_format="wav",
-        timeout=30.0,
-    )
-
-    return response.content
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.audio.speech.create(
+                model=settings.tts_model,
+                voice=settings.tts_voice,
+                input=text,
+                response_format="wav",
+                timeout=30.0,
+            )
+            return response.content
+        except APIError as e:
+            last_err = e
+            logger.warning("TTS attempt %d failed: %s", attempt + 1, e)
+            if attempt == 1:
+                raise last_err
+    return b""  # unreachable
 
 
 # ---------- Public API ----------
