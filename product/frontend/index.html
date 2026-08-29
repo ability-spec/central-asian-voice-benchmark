@@ -6,7 +6,7 @@
 <title>BirOvoz — Every Story, In Your Own Language</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Noto+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 html{scroll-behavior:smooth}
@@ -34,7 +34,7 @@ html{scroll-behavior:smooth}
 }
 
 body{
-  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;
+  font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI','Noto Sans',Roboto,sans-serif;
   background:var(--bg);
   color:var(--text);
   overflow-x:hidden;
@@ -49,6 +49,13 @@ body{
   background:var(--teal-dark);
   display:flex;
   flex-direction:column;
+  transform:translateY(0);
+  transition:opacity 0.75s ease, transform 0.9s cubic-bezier(0.76,0,0.24,1);
+}
+.hero--exit{
+  opacity:0;
+  transform:translateY(-20px);
+  pointer-events:none;
 }
 
 /* Video */
@@ -57,11 +64,15 @@ body{
   inset:0;
   width:100%;height:100%;
   object-fit:cover;
+  object-position:center center;
   opacity:0;
-  transition:opacity 2s ease;
+  transform:scale(1);
+  transition:opacity 2s ease, transform 1.6s cubic-bezier(0.33,0,0.66,0);
   pointer-events:none;
+  will-change:transform,opacity;
 }
 .hero-video.loaded{opacity:1}
+.hero-video.exiting{transform:scale(1.06)}
 
 /* Blueprint grid */
 .hero-grid{
@@ -75,14 +86,13 @@ body{
   z-index:1;
 }
 
-/* Gradient overlay — dark at edges, transparent at center so video shows */
+/* Minimal vignette — barely-there edge darkening, video shows through fully */
 .hero-overlay{
   position:absolute;
   inset:0;
   background:
-    linear-gradient(to bottom, rgba(7,30,43,0.82) 0%, transparent 30%),
-    linear-gradient(to top,    rgba(7,30,43,0.88) 0%, transparent 38%),
-    linear-gradient(to right,  rgba(7,30,43,0.6)  0%, transparent 55%);
+    linear-gradient(to bottom, rgba(7,30,43,0.32) 0%, transparent 14%),
+    linear-gradient(to top,    rgba(7,30,43,0.28) 0%, transparent 14%);
   z-index:1;
   pointer-events:none;
 }
@@ -129,84 +139,6 @@ body{
   vertical-align:super;
 }
 
-/* ── Hero body */
-.hero-body{
-  flex:1;
-  display:flex;
-  flex-direction:column;
-  justify-content:center;
-  padding-bottom:5vh;
-  max-width:680px;
-}
-.hero-eyebrow{
-  display:flex;
-  align-items:center;
-  gap:12px;
-  font-size:0.59rem;
-  letter-spacing:0.22em;
-  text-transform:uppercase;
-  color:rgba(200,112,58,0.7);
-  margin-bottom:22px;
-}
-.hero-eyebrow::before{
-  content:'';
-  display:block;
-  width:30px;height:1px;
-  background:var(--amber);
-  opacity:0.5;
-  flex-shrink:0;
-}
-.hero-title{
-  font-family:'Cormorant Garamond',Georgia,serif;
-  font-weight:700;
-  font-size:clamp(4.8rem,10.5vw,9.5rem);
-  line-height:0.9;
-  letter-spacing:-0.025em;
-  color:var(--cream);
-  margin-bottom:26px;
-  text-shadow:0 4px 40px rgba(0,0,0,0.4);
-}
-.hero-subtitle{
-  font-family:'Cormorant Garamond',Georgia,serif;
-  font-weight:300;
-  font-style:italic;
-  font-size:clamp(1.1rem,2.2vw,1.6rem);
-  line-height:1.5;
-  color:rgba(240,235,224,0.6);
-  max-width:420px;
-  margin-bottom:40px;
-}
-.hero-cta{
-  display:inline-flex;
-  align-items:center;
-  gap:10px;
-  padding:11px 26px;
-  border:1px solid rgba(200,112,58,0.45);
-  border-radius:40px;
-  background:transparent;
-  color:var(--cream);
-  font-family:inherit;
-  font-size:0.75rem;
-  font-weight:500;
-  letter-spacing:0.09em;
-  text-transform:uppercase;
-  cursor:pointer;
-  transition:all 0.24s ease;
-  align-self:flex-start;
-}
-.hero-cta:hover{
-  background:rgba(200,112,58,0.1);
-  border-color:var(--amber);
-  transform:translateY(-1px);
-  box-shadow:0 8px 24px rgba(200,112,58,0.15);
-}
-.hero-cta svg{
-  width:14px;height:14px;
-  stroke:currentColor;fill:none;
-  stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;
-  transition:transform 0.24s;
-}
-.hero-cta:hover svg{transform:translateY(2px)}
 
 /* ── Hero foot */
 .hero-foot{
@@ -234,6 +166,40 @@ body{
   width:110px;height:14px;
   fill:currentColor;
   display:block;
+}
+
+/* ── GO TEST */
+.hero-center{
+  flex:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+.go-test{
+  padding:11px 34px;
+  border:1px solid rgba(240,235,224,0.28);
+  border-radius:2px;
+  background:transparent;
+  color:rgba(240,235,224,0.52);
+  font-family:inherit;
+  font-size:0.6rem;
+  font-weight:500;
+  letter-spacing:0.3em;
+  text-transform:uppercase;
+  cursor:pointer;
+  transform:translateY(0);
+  transition:border-color 0.4s ease, color 0.4s ease, transform 0.5s cubic-bezier(0.22,1,0.36,1);
+  position:relative;z-index:2;
+}
+.go-test:hover{
+  border-color:rgba(240,235,224,0.58);
+  color:rgba(240,235,224,0.88);
+  transform:translateY(-3px);
+}
+.go-test:active{
+  border-color:rgba(200,112,58,0.5);
+  color:var(--amber-lite);
+  transform:translateY(-1px);
 }
 
 /* ── Scroll cue */
@@ -272,19 +238,13 @@ body{
 
 /* ── Hero entrance animations */
 .hero-nav,
-.hero-eyebrow,
-.hero-title,
-.hero-subtitle,
-.hero-cta,
+.hero-center,
 .hero-foot{
   animation:hero-rise 1s cubic-bezier(0.22,1,0.36,1) both;
 }
-.hero-nav{     animation-delay:0.05s}
-.hero-eyebrow{ animation-delay:0.18s}
-.hero-title{   animation-delay:0.28s}
-.hero-subtitle{animation-delay:0.38s}
-.hero-cta{     animation-delay:0.48s}
-.hero-foot{    animation-delay:0.55s}
+.hero-nav{    animation-delay:0.05s}
+.hero-center{ animation-delay:0.35s}
+.hero-foot{   animation-delay:0.55s}
 @keyframes hero-rise{
   from{opacity:0;transform:translateY(20px)}
   to{opacity:1;transform:translateY(0)}
@@ -292,7 +252,8 @@ body{
 
 @media(prefers-reduced-motion:reduce){
   .hero-video{transition:none}
-  .hero-nav,.hero-eyebrow,.hero-title,.hero-subtitle,.hero-cta,.hero-foot{animation:none}
+  .hero{transition:none}
+  .hero-nav,.hero-center,.hero-foot{animation:none}
   .scroll-cue svg{animation:none}
 }
 
@@ -677,11 +638,50 @@ body{
   text-transform:uppercase;
 }
 
+/* ── App blueprint grid (visual continuity with hero) */
+.app-section::after{
+  content:'';
+  position:absolute;
+  inset:0;
+  background-image:
+    linear-gradient(rgba(255,255,255,0.014) 1px, transparent 1px),
+    linear-gradient(90deg,rgba(255,255,255,0.014) 1px, transparent 1px);
+  background-size:58px 58px;
+  pointer-events:none;
+  z-index:0;
+}
+
+/* ── App reveal stagger (JS-driven, CSS transition handles easing) */
+.app-reveal{
+  will-change:opacity,transform;
+}
+
+/* ── View Transitions API — scene change animation */
+::view-transition-old(root){
+  animation:700ms cubic-bezier(0.76,0,0.24,1) both vt-scene-exit;
+}
+::view-transition-new(root){
+  animation:800ms cubic-bezier(0.22,1,0.36,1) 60ms both vt-scene-enter;
+}
+@keyframes vt-scene-exit{
+  to{opacity:0;transform:translateY(-2vh) scale(0.99)}
+}
+@keyframes vt-scene-enter{
+  from{opacity:0;transform:translateY(2.5vh)}
+}
+@media(prefers-reduced-motion:reduce){
+  ::view-transition-old(root),
+  ::view-transition-new(root){animation:none}
+}
+
+/* ── hero--hidden (after View Transition completes) */
+.hero--hidden{
+  display:none;
+}
+
 /* ══ RESPONSIVE ════════════════════════════════════════════ */
 @media(max-width:640px){
   .hero-content{padding:0 24px}
-  .hero-title{font-size:clamp(3.6rem,13vw,5.5rem)}
-  .hero-subtitle{font-size:1rem}
   .hero-nav{padding:20px 0}
   .hero-foot{padding-bottom:72px}
 }
@@ -715,14 +715,8 @@ body{
       <span class="hero-wordmark">bir ovoz <span class="star">✦</span></span>
     </nav>
 
-    <div class="hero-body">
-      <p class="hero-eyebrow">Uzbek &middot; Kazakh &middot; Voice AI</p>
-      <h1 class="hero-title">BirOvoz</h1>
-      <p class="hero-subtitle">Every story, in your own language.</p>
-      <button class="hero-cta" onclick="scrollToApp()">
-        Talk to BirOvoz
-        <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
-      </button>
+    <div class="hero-center">
+      <button class="go-test" onclick="enterProduct()" aria-label="Enter BirOvoz voice interface">Go Test</button>
     </div>
 
     <div class="hero-foot" aria-hidden="true">
@@ -762,7 +756,7 @@ body{
 
   </div>
 
-  <button class="scroll-cue" onclick="scrollToApp()" aria-label="Scroll to voice interface">
+  <button class="scroll-cue" onclick="enterProduct()" aria-label="Enter BirOvoz voice interface">
     <span>Listen</span>
     <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
   </button>
@@ -774,7 +768,7 @@ body{
   <div class="app-inner">
 
     <!-- Brand -->
-    <div class="app-brand">
+    <div class="app-brand app-reveal">
       <div class="app-wordmark">
         BirOvoz <span class="amber-dot"></span>
       </div>
@@ -782,7 +776,7 @@ body{
     </div>
 
     <!-- Language selector -->
-    <div class="lang-row" role="group" aria-label="Language">
+    <div class="lang-row app-reveal" role="group" aria-label="Language">
       <button class="lang-btn" data-lang="uz" onclick="setLang('uz')">
         <span class="lang-native">O'zbekcha</span>
         <span class="lang-en">Uzbek</span>
@@ -794,7 +788,7 @@ body{
     </div>
 
     <!-- Mic stage -->
-    <div class="mic-stage" id="micStage">
+    <div class="mic-stage app-reveal" id="micStage">
       <div class="halo halo-1"></div>
       <div class="halo halo-2"></div>
       <div class="progress-ring" id="progressRing"></div>
@@ -812,7 +806,7 @@ body{
     </div>
 
     <!-- Chat -->
-    <div class="chat-card">
+    <div class="chat-card app-reveal">
       <div class="chat-inner" id="chat">
         <div class="chat-empty" id="chatEmpty">
           <div class="chat-empty-icon">
@@ -837,7 +831,7 @@ body{
       </div>
     </div>
 
-    <div class="app-foot">BirOvoz &middot; OpenAI-powered &middot; Central Asian Voice AI</div>
+    <div class="app-foot app-reveal">BirOvoz &middot; OpenAI-powered &middot; Central Asian Voice AI</div>
 
   </div>
 </section>
@@ -884,9 +878,53 @@ const progressRing = $('#progressRing');
 const micStage   = $('#micStage');
 const canvas     = $('#waveCanvas');
 
-/* ── Hero → App scroll ─────────────────────────────────── */
-function scrollToApp() {
-  document.getElementById('app').scrollIntoView({behavior:'smooth'});
+/* ── Hero → App cinematic scene transition ─────────────── */
+let _revealApp = null; // set by reveal setup below
+
+function _rAfScroll(app) {
+  document.documentElement.style.scrollBehavior = 'auto';
+  const start = window.scrollY;
+  const target = app.getBoundingClientRect().top + window.scrollY;
+  const dur = 900, t0 = performance.now();
+  function ease(t) { return t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2,3)/2; }
+  (function step(now) {
+    const p = Math.min((now - t0) / dur, 1);
+    window.scrollTo(0, start + (target - start) * ease(p));
+    if (p < 1) requestAnimationFrame(step);
+    else {
+      document.documentElement.style.scrollBehavior = '';
+      if (_revealApp) setTimeout(_revealApp, 80);
+    }
+  })(performance.now());
+}
+
+function enterProduct() {
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+  const hero = document.getElementById('hero');
+  const app  = document.getElementById('app');
+  const vid  = document.querySelector('.hero-video');
+
+  if (vid) vid.classList.add('exiting');
+
+  if (prefersReduced) {
+    app.scrollIntoView({behavior:'auto'});
+    if (_revealApp) _revealApp();
+    return;
+  }
+
+  if (document.startViewTransition) {
+    // View Transitions API — cinematic scene change
+    const vt = document.startViewTransition(() => {
+      app.scrollIntoView({behavior:'instant'});
+    });
+    vt.finished.then(() => {
+      if (_revealApp) setTimeout(_revealApp, 60);
+    }).catch(() => {});
+  } else {
+    // Fallback: rAF scroll + hero fade
+    hero.classList.add('hero--exit');
+    _rAfScroll(app);
+  }
 }
 
 /* ── Language ──────────────────────────────────────────── */
@@ -1253,6 +1291,52 @@ window.addEventListener('beforeunload', () => {
 });
 
 setState(STATE.IDLE);
+
+/* ── App section staggered entrance ────────────────────── */
+(function () {
+  const prefersReduced = window.matchMedia('(prefers-reduced-motion:reduce)').matches;
+  const reveals = Array.from(document.querySelectorAll('.app-reveal'));
+  if (!reveals.length) return;
+
+  function revealAll() {
+    reveals.forEach(el => {
+      el.style.opacity    = '1';
+      el.style.transform  = 'translateY(0)';
+    });
+  }
+
+  if (prefersReduced) {
+    // Skip animation — expose no-op
+    _revealApp = revealAll;
+    return;
+  }
+
+  // Set initial hidden state via inline style
+  reveals.forEach((el, i) => {
+    const d = i * 110;
+    el.style.cssText += `opacity:0;transform:translateY(22px);` +
+      `transition:opacity 0.88s cubic-bezier(0.22,1,0.36,1) ${d}ms,` +
+      `transform 0.88s cubic-bezier(0.22,1,0.36,1) ${d}ms;`;
+  });
+
+  // Expose for enterProduct() to call after transition
+  _revealApp = revealAll;
+
+  // Safety: IntersectionObserver fires if user navigates directly to app section
+  // (not via GO TEST) — delayed so it doesn't fire on initial page load
+  let revealed = false;
+  const obs = new IntersectionObserver((entries) => {
+    if (entries[0].isIntersecting && !revealed) {
+      revealed = true;
+      revealAll();
+      obs.disconnect();
+    }
+  }, { threshold: 0.1 });
+  setTimeout(() => {
+    const appSection = document.getElementById('app');
+    if (appSection) obs.observe(appSection);
+  }, 300);
+})();
 </script>
 </body>
 </html>
