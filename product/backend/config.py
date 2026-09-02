@@ -47,6 +47,11 @@ class Settings:
             os.environ.get("AUDIO_OUTPUT_DIR", str(Path.cwd() / "audio_output"))
         )
     )
+    log_dir: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("LOG_DIR", str(Path.cwd() / "logs"))
+        )
+    )
 
     # Provider selection
     stt_provider: str = field(

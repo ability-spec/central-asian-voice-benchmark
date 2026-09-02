@@ -44,3 +44,4 @@ product/backend/.env
 product/backend/.venv/
 uploads/
 audio_output/
+logs/

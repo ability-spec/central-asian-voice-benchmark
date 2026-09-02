@@ -27,6 +27,14 @@ from product.backend.config import settings
 from product.backend.routers import health, turn
 
 # --- Logging ---
+# Reconfigure stdout to UTF-8 so Cyrillic/Unicode in log messages doesn't
+# crash on Windows (default cp1252 can't encode e.g. Қ, Ə, Ү).
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

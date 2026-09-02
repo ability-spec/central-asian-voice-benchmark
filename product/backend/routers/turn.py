@@ -21,6 +21,7 @@ from product.backend.services.stt import transcribe
 from product.backend.services.llm import respond
 from product.backend.services.tts import synthesize_b64
 from product.backend.services.session import session_manager
+from product.backend.services.log_jsonl import log_turn
 
 logger = logging.getLogger(__name__)
 
@@ -205,5 +206,27 @@ async def handle_turn(
         stt_time, llm_time, tts_time,
         stt_time + llm_time + tts_time,
     )
+
+    # --- 10. Structured JSONL log (non-blocking, best-effort) ---
+    log_turn(
+        request_id=request_id,
+        conversation_id=conversation_id,
+        language=language,
+        turn_number=turn_number,
+        stt_ms=round(stt_time * 1000),
+        llm_ms=round(llm_time * 1000),
+        tts_ms=round(tts_time * 1000),
+        transcript_len=len(transcript),
+        response_len=len(response_text),
+        audio_bytes=len(audio_b64),
+        mock_mode=settings.mock_mode,
+    )
+
+    # --- 11. Clean up temp audio files ---
+    for _path in (raw_path, wav_path):
+        try:
+            _path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
     return response
