@@ -888,6 +888,7 @@ let recordingTimer = null;
 let recordingSeconds = 0;
 let currentAudio = null;
 let currentAudioUrl = null;
+let turnAudio = []; // base64 TTS audio per AI turn (by index, never inlined in DOM)
 let lastFormData = null;
 let turnNumber = 0;
 
@@ -975,6 +976,22 @@ function setLang(lang) {
 function toggleMic() {
   if (state === STATE.IDLE) startRecording();
   else if (state === STATE.RECORDING) stopRecording();
+  else if (state === STATE.SPEAKING) bargeIn();
+}
+
+/* ── Barge-in: interrupt the AI reply and start recording ── */
+function bargeIn() {
+  if (currentAudio) {
+    try { currentAudio.onended = null; } catch (e) {}
+    try { currentAudio.pause(); } catch (e) {}
+    currentAudio = null;
+  }
+  if (currentAudioUrl) {
+    try { URL.revokeObjectURL(currentAudioUrl); } catch (e) {}
+    currentAudioUrl = null;
+  }
+  resetPlayButtons();
+  startRecording();
 }
 
 /* ── Start recording ───────────────────────────────────── */
@@ -1171,6 +1188,8 @@ function displayTurn(data) {
     '</div>';
   chatEl.appendChild(userDiv);
 
+  const audioIdx = turnAudio.length;
+  turnAudio.push(data.audio);
   const aiDiv = document.createElement('div');
   aiDiv.className = 'msg ai';
   aiDiv.innerHTML =
@@ -1180,7 +1199,7 @@ function displayTurn(data) {
     '<div class="msg-body">' +
       '<div class="msg-meta"><span class="msg-role">AI &middot; ' + langLabel + '</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
       '<div class="msg-text">' + escapeHtml(data.response_text) +
-        '<br><button class="play-again" onclick="playAudio(\'' + data.audio + '\',this)">' +
+        '<br><button class="play-again" data-audio-idx="' + audioIdx + '" onclick="playAudioByIndex(' + audioIdx + ',this)">' +
           '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again' +
         '</button>' +
       '</div>' +
@@ -1190,9 +1209,33 @@ function displayTurn(data) {
 }
 
 /* ── Play response audio ───────────────────────────────── */
+const PLAY_LABELS = {
+  idle:    '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again',
+  playing: '<svg viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>Playing…',
+  tap:     '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Tap to play',
+};
+function paintPlayButton(btn, mode) {
+  if (!btn) return;
+  btn.classList.toggle('playing', mode !== 'idle');
+  btn.innerHTML = PLAY_LABELS[mode] || PLAY_LABELS.idle;
+}
+function resetPlayButtons() {
+  document.querySelectorAll('.play-again').forEach(function (b) { paintPlayButton(b, 'idle'); });
+}
+function latestPlayButton() {
+  const btns = chatEl.querySelectorAll('.play-again');
+  return btns.length ? btns[btns.length - 1] : null;
+}
+
 function playResponse(base64Audio) {
   setState(STATE.SPEAKING);
-  playAudio(base64Audio);
+  playAudio(base64Audio, latestPlayButton());
+}
+
+function playAudioByIndex(idx, btn) {
+  const b64 = turnAudio[idx];
+  if (!b64) { showError('Audio for this message is no longer available.'); return; }
+  playAudio(b64, btn);
 }
 
 function playAudio(base64Audio, btn) {
@@ -1210,27 +1253,32 @@ function playAudio(base64Audio, btn) {
   currentAudio = audio;
 
   if (btn) {
-    document.querySelectorAll('.play-again').forEach(b => {
-      b.classList.remove('playing');
-      b.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again';
-    });
-    btn.classList.add('playing');
-    btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></svg>Playing…';
+    resetPlayButtons();
+    paintPlayButton(btn, 'playing');
   }
 
   const cleanup = () => {
     if (state === STATE.SPEAKING) setState(STATE.IDLE);
     URL.revokeObjectURL(url);
     currentAudio = null; currentAudioUrl = null;
-    if (btn) {
-      btn.classList.remove('playing');
-      btn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again';
-    }
+    paintPlayButton(btn, 'idle');
   };
 
   audio.onended = cleanup;
   audio.onerror = () => { cleanup(); showError('Failed to play audio response.'); };
-  audio.play().catch(err => { cleanup(); console.error('Playback failed:', err); });
+  audio.play().catch(err => {
+    cleanup();
+    if (err && err.name === 'NotAllowedError') {
+      // Autoplay blocked by the browser: point at the inline Play control
+      // instead of failing silently. The mic stays usable.
+      paintPlayButton(btn || latestPlayButton(), 'tap');
+      statusMain.textContent = language === 'uz' ? 'Javobni eshitish uchun Play tugmasini bosing' : 'Жауапты тыңдау үшін Play түймесін басыңыз';
+      statusHint.textContent = 'Autoplay blocked — tap Play on the reply';
+    } else {
+      console.error('Playback failed:', err);
+      showError('Failed to play audio response.');
+    }
+  });
 }
 
 /* ── State machine ─────────────────────────────────────── */
@@ -1277,13 +1325,13 @@ function setState(s) {
       break;
     case STATE.SPEAKING:
       micBtn.classList.add('speaking');
-      micBtn.disabled = true;
+      // NB: mic stays enabled during SPEAKING for barge-in (tap to interrupt).
       micStage.classList.add('active');
       progressRing.className = 'progress-ring show-green';
       micIcon.innerHTML = ICONS.wave;
       statusMain.className = 'status-main green';
       statusMain.textContent = language === 'uz' ? 'Javob aytilmoqda…' : 'Жауап айтылуда…';
-      statusHint.textContent = 'AI is speaking';
+      statusHint.textContent = 'Tap mic to interrupt';
       break;
     case STATE.ERROR:
       micBtn.classList.add('error-state');
