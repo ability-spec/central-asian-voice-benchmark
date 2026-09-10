@@ -20,6 +20,7 @@ from product.backend.models import TurnRequest, TurnResponse
 from product.backend.services.stt import transcribe
 from product.backend.services.llm import respond
 from product.backend.services.tts import synthesize_b64
+from product.backend.services.score import score as score_transcript
 from product.backend.services.session import session_manager
 from product.backend.services.log_jsonl import log_turn
 
@@ -91,6 +92,7 @@ async def handle_turn(
     audio: UploadFile = File(...),
     conversation_id: str = Form(...),
     language: str = Form(...),
+    reference_text: str = Form(""),
 ):
     """Process one turn of the voice conversation pipeline.
 
@@ -182,8 +184,14 @@ async def handle_turn(
     tts_time = time.time() - t0
     logger.info("[%s] TTS: %.2fs | audio size=%d bytes", request_id, tts_time, len(audio_b64))
 
-    # --- 9. Build response ---
+    # --- 9. Score transcript against the optional reference ---
+    scoring = score_transcript(reference_text, transcript)
+
+    # --- 10. Build response ---
     turn_number = session_manager.get_turn_count(conversation_id)
+    stt_ms = round(stt_time * 1000)
+    llm_ms = round(llm_time * 1000)
+    tts_ms = round(tts_time * 1000)
 
     response = TurnResponse(
         conversation_id=conversation_id,
@@ -198,6 +206,13 @@ async def handle_turn(
             "tts": f"{settings.tts_provider}/{settings.tts_model}",
             "mock_mode": settings.mock_mode,
         },
+        wer=scoring["wer"],
+        cer=scoring["cer"],
+        scored=scoring["scored"],
+        stt_ms=stt_ms,
+        llm_ms=llm_ms,
+        tts_ms=tts_ms,
+        total_ms=stt_ms + llm_ms + tts_ms,
     )
 
     logger.info(
@@ -207,22 +222,22 @@ async def handle_turn(
         stt_time + llm_time + tts_time,
     )
 
-    # --- 10. Structured JSONL log (non-blocking, best-effort) ---
+    # --- 11. Structured JSONL log (non-blocking, best-effort) ---
     log_turn(
         request_id=request_id,
         conversation_id=conversation_id,
         language=language,
         turn_number=turn_number,
-        stt_ms=round(stt_time * 1000),
-        llm_ms=round(llm_time * 1000),
-        tts_ms=round(tts_time * 1000),
+        stt_ms=stt_ms,
+        llm_ms=llm_ms,
+        tts_ms=tts_ms,
         transcript_len=len(transcript),
         response_len=len(response_text),
         audio_bytes=len(audio_b64),
         mock_mode=settings.mock_mode,
     )
 
-    # --- 11. Clean up temp audio files ---
+    # --- 12. Clean up temp audio files ---
     for _path in (raw_path, wav_path):
         try:
             _path.unlink(missing_ok=True)

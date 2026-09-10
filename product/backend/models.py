@@ -34,6 +34,26 @@ class TurnResponse(BaseModel):
         description="Which provider/model handled each pipeline stage",
     )
     error: Optional[str] = None
+    # Reference-based scoring (MVP benchmark mode). Null/False when the
+    # request carried no usable reference_text.
+    wer: Optional[float] = Field(
+        default=None,
+        description="Word error rate vs reference_text; null when unscored",
+    )
+    cer: Optional[float] = Field(
+        default=None,
+        description="Character error rate vs reference_text; null when unscored",
+    )
+    scored: bool = Field(
+        default=False,
+        description="True when reference_text was provided and scoring ran",
+    )
+    stt_ms: int = Field(default=0, description="STT stage latency in ms")
+    llm_ms: int = Field(default=0, description="LLM stage latency in ms")
+    tts_ms: int = Field(default=0, description="TTS stage latency in ms")
+    total_ms: int = Field(
+        default=0, description="Pipeline total (stt_ms + llm_ms + tts_ms)"
+    )
 
 
 # --- Health models ---
