@@ -252,3 +252,77 @@ def test_overlong_audio_returns_413(client):
     resp = _post_turn(client, _wav_bytes(duration_s=31))
     assert resp.status_code == 413
     assert "too long" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# /api/prompts + /api/leaderboard (CP2: read-only CSV passthrough)
+# ---------------------------------------------------------------------------
+
+def test_prompts_uz_returns_100_with_shape(client):
+    resp = client.get("/api/prompts", params={"language": "uz"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["language"] == "uz"
+    prompts = body["prompts"]
+    assert len(prompts) == 100
+    assert all(set(p) == {"id", "sentence", "duration_s"} for p in prompts)
+    assert all(isinstance(p["sentence"], str) and p["sentence"].strip() for p in prompts)
+    assert all(isinstance(p["duration_s"], float) and p["duration_s"] > 0 for p in prompts)
+    assert len({p["id"] for p in prompts}) == 100  # unique ids
+
+
+def test_prompts_kk_returns_100(client):
+    resp = client.get("/api/prompts", params={"language": "kk"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["language"] == "kk"
+    assert len(body["prompts"]) == 100
+
+
+def test_prompts_match_committed_manifest(client):
+    # Spot-check against research/phase3a_audio_manifest.csv (verbatim read).
+    resp = client.get("/api/prompts", params={"language": "uz"})
+    first = resp.json()["prompts"][0]
+    assert first["id"] == "1187023182_2_34562_1"
+    assert first["sentence"] == "tayyor va arzon uy"
+    assert first["duration_s"] == pytest.approx(2.494)
+
+
+def test_prompts_invalid_language_returns_400(client):
+    resp = client.get("/api/prompts", params={"language": "ru"})
+    assert resp.status_code == 400
+    assert "Invalid language" in resp.json()["detail"]
+
+
+def test_prompts_missing_language_returns_422(client):
+    resp = client.get("/api/prompts")
+    assert resp.status_code == 422
+
+
+def test_leaderboard_returns_12_rows_with_shape(client):
+    resp = client.get("/api/leaderboard")
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()["rows"]
+    assert len(rows) == 12
+    for row in rows:
+        assert isinstance(row["model"], str) and row["model"]
+        assert row["language"] in ("uz", "kk")
+        assert isinstance(row["wer"], float)
+        assert isinstance(row["cer"], float)
+        assert isinstance(row["p50_ms"], int)
+        assert isinstance(row["p95_ms"], int)
+        assert isinstance(row["n"], int) and row["n"] > 0
+
+
+def test_leaderboard_match_committed_csv(client):
+    # Spot-check against research/final_benchmark_results.csv (verbatim read).
+    resp = client.get("/api/leaderboard")
+    first = resp.json()["rows"][0]
+    assert first["model"] == "gpt-4o-mini-transcribe"
+    assert first["language"] == "kk"
+    assert first["condition"] == "auto"
+    assert first["n"] == 300
+    assert first["wer"] == pytest.approx(0.4519)
+    assert first["cer"] == pytest.approx(0.1698)
+    assert first["p50_ms"] == 644
+    assert first["prov_lid"] is None  # empty CSV cell -> null
