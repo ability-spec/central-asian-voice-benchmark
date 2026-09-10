@@ -841,14 +841,47 @@ body{
    BirOvoz — Frontend (multi-turn voice pipeline)
    ═══════════════════════════════════════════════════════════ */
 
-// Backend base URL. Empty string = same origin (FastAPI serves both).
-// 'http://127.0.0.1:8000' when frontend runs on a separate static server.
-const API_BASE = 'http://127.0.0.1:8000';
+// Backend base URL resolution (highest priority first):
+// 1. ?api=<base> query param, e.g. ?api=http://192.168.1.5:8000
+// 2. window.BIROVOZ_API global (set before load, or via devtools console)
+// 3. Same origin ('') when served by the backend itself — works on
+//    localhost, LAN, remote hosts and https (no mixed content).
+// 4. Same hostname + :8000 when served from a :3000 static server.
+// 5. http://127.0.0.1:8000 when opened directly from disk (file://).
+function resolveApiBase() {
+  var override = null;
+  try {
+    override = new URLSearchParams(window.location.search).get('api');
+  } catch (e) { override = null; }
+  if (!override && typeof window.BIROVOZ_API === 'string' && window.BIROVOZ_API) {
+    override = window.BIROVOZ_API;
+  }
+  if (override) return String(override).replace(/\/+$/, '');
+  if (window.location.protocol === 'file:') return 'http://127.0.0.1:8000';
+  if (window.location.port === '3000') {
+    return window.location.protocol + '//' + window.location.hostname + ':8000';
+  }
+  return '';
+}
+const API_BASE = resolveApiBase();
 
 const STATE = {IDLE:'idle',RECORDING:'recording',PROCESSING:'processing',SPEAKING:'speaking',ERROR:'error'};
 let state = STATE.IDLE;
 let language = 'kk';
-let conversationId = crypto.randomUUID();
+function newConversationId() {
+  try {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+      return window.crypto.randomUUID();
+    }
+  } catch (e) { /* fall through to Math.random fallback */ }
+  // Fallback for insecure contexts (plain http on LAN, old browsers):
+  // not crypto-grade, but unique enough for a demo session id.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    var r = Math.random() * 16 | 0;
+    return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+  });
+}
+let conversationId = newConversationId();
 let mediaRecorder = null;
 let audioChunks = [];
 let recordingTimer = null;
