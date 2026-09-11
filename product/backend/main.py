@@ -48,7 +48,7 @@ logger.info(loaded_msg)
 app = FastAPI(
     title="Central Asian Voice AI",
     description="Voice AI pipeline for Uzbek and Kazakh languages: "
-                "STT → LLM → TTS",
+                "STT → LLM → TTS. DUB1 adds English→uz/kk dubbing mode.",
     version="0.1.0",
 )
 

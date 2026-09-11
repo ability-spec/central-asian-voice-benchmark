@@ -1,7 +1,14 @@
 """
 POST /api/turn — the main pipeline endpoint.
 
-Takes audio + conversation_id + language, returns transcript + AI response + audio.
+Takes audio + conversation_id + language (+ mode + source_language since
+DUB1), returns transcript + AI response (or dub translation) + audio.
+
+Two flows:
+  chat/benchmark (mode omitted or 'chat'): original behaviour, optionally
+    with an explicit source_language for the STT stage.
+  dubbing (mode='dub'): English audio -> English transcript -> stateless
+    translation to 'uz'/'kk' -> TTS of the translated text.
 """
 
 import io
@@ -18,7 +25,7 @@ from fastapi.responses import JSONResponse
 from product.backend.config import settings
 from product.backend.models import TurnRequest, TurnResponse
 from product.backend.services.stt import transcribe
-from product.backend.services.llm import respond
+from product.backend.services.llm import respond, translate
 from product.backend.services.tts import synthesize_b64
 from product.backend.services.score import score as score_transcript
 from product.backend.services.session import session_manager
@@ -93,8 +100,16 @@ async def handle_turn(
     conversation_id: str = Form(...),
     language: str = Form(...),
     reference_text: str = Form(""),
+    mode: str = Form(""),
+    source_language: str = Form(""),
 ):
-    """Process one turn of the voice conversation pipeline.
+    """Process one turn of the voice pipeline.
+
+    Modes:
+      - benchmark chat (default, mode omitted/'chat'): STT in `language`,
+        conversational LLM reply in `language`. Identical to pre-DUB1.
+      - dubbing (mode='dub'): STT in English, stateless translation to
+        `language` ('uz'/'kk'), TTS of the translated text.
 
     Pipeline: Audio Upload → STT → LLM → TTS → Response
     """
@@ -104,6 +119,30 @@ async def handle_turn(
     # --- 1. Validate language ---
     if language not in ("uz", "kk"):
         raise HTTPException(status_code=400, detail=f"Invalid language '{language}'. Must be 'uz' or 'kk'.")
+
+    # --- 1b. Validate mode / source_language (DUB1) ---
+    mode = mode.strip().lower()
+    source_language = source_language.strip().lower()
+    if mode not in ("", "chat", "dub"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{mode}'. Must be 'dub', 'chat' or empty.",
+        )
+    if source_language and source_language not in ("en", "uz", "kk"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid source_language '{source_language}'. Must be 'en', 'uz', 'kk' or empty.",
+        )
+    is_dub = mode == "dub"
+    if is_dub and source_language not in ("", "en"):
+        raise HTTPException(
+            status_code=400,
+            detail="Dub mode (DUB1) accepts English source speech only.",
+        )
+    # STT language: forced English in dub mode; otherwise honour an explicit
+    # source_language, falling back to `language` (preserves benchmark behaviour).
+    stt_lang = "en" if is_dub else (source_language or language)
+    logger.info("[%s] Mode=%s stt_lang=%s", request_id, "dub" if is_dub else "chat", stt_lang)
 
     # --- 2. Validate content type ---
     if audio.content_type and audio.content_type not in ALLOWED_AUDIO_TYPES:
@@ -154,20 +193,27 @@ async def handle_turn(
         logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
         raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
 
-    # --- 6. STT ---
+    # --- 6. STT (in stt_lang: 'en' for dubbing, else the target language) ---
     t0 = time.time()
     try:
-        transcript = transcribe(wav_path, language, "audio/wav")
+        transcript = transcribe(wav_path, stt_lang, "audio/wav")
     except Exception as e:
         logger.error("[%s] STT failed: %s", request_id, str(e))
         raise HTTPException(status_code=502, detail="Speech transcription failed. Please try again.")
     stt_time = time.time() - t0
-    logger.info("[%s] STT (%s): %.2fs | transcript=%r", request_id, language, stt_time, transcript[:80])
+    logger.info("[%s] STT (%s): %.2fs | transcript=%r", request_id, stt_lang, stt_time, transcript[:80])
 
-    # --- 7. LLM ---
+    # --- 7. LLM: dub mode translates (stateless), chat mode converses ---
     t0 = time.time()
     try:
-        response_text = respond(conversation_id, transcript, language)
+        if is_dub:
+            response_text = translate(transcript, stt_lang, language)
+            # Dubbing itself is stateless, but we still record the exchange so
+            # turn numbering and the per-session turn cap keep working for the UI.
+            session_manager.add_turn(conversation_id, "user", transcript)
+            session_manager.add_turn(conversation_id, "assistant", response_text)
+        else:
+            response_text = respond(conversation_id, transcript, language)
     except Exception as e:
         logger.error("[%s] LLM failed: %s", request_id, str(e))
         raise HTTPException(status_code=502, detail="Response generation failed. Please try again.")
@@ -205,6 +251,9 @@ async def handle_turn(
             "llm": f"{settings.llm_provider}/{settings.llm_model}",
             "tts": f"{settings.tts_provider}/{settings.tts_model}",
             "mock_mode": settings.mock_mode,
+            # DUB1 observability: which flow produced this turn.
+            "mode": "dub" if is_dub else "chat",
+            "source_language": stt_lang,
         },
         wer=scoring["wer"],
         cer=scoring["cer"],

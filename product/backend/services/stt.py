@@ -3,6 +3,9 @@ Speech-to-Text service.
 
 OpenAI gpt-4o-transcribe — CONFIRMED working for both Uzbek and Kazakh
 per benchmark research (Phase 1, gpt-4o-transcribe, CONFIRMED WORKING).
+
+Since DUB1 it also accepts English ('en') as a source language for the
+dubbing pipeline (English speech -> translated -> dubbed audio).
 """
 
 import io
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 MOCK_TRANSCRIPTS = {
     "uz": "Salom, buzbekcha test ovoz.",
     "kk": "Сәлем, бұл қазақша тест дауыс.",
+    "en": "Hello, this is an English test voice.",
 }
 
 
@@ -38,10 +42,12 @@ def _openai_transcribe(audio_path: Path, language: str, content_type: str = "aud
     Uses prompt-based language hint per benchmark findings:
     - Uzbek: prompt="Uzbek" (ISO 'uz' rejected by API)
     - Kazakh: prompt="Kazakh"
+    - English (DUB1 dubbing source): prompt="English"
     """
     language_prompt = {
         "uz": "Uzbek",
         "kk": "Kazakh",
+        "en": "English",
     }
     last_err = None
     for attempt in range(2):
@@ -71,7 +77,7 @@ def transcribe(audio_path: Path, language: str, content_type: str = "audio/wav")
 
     Args:
         audio_path: Path to audio file.
-        language: ISO code ('uz' or 'kk').
+        language: ISO code ('uz', 'kk', or 'en' for dubbing).
         content_type: Original MIME type of the uploaded audio file.
 
     Returns:

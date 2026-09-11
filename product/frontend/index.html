@@ -772,11 +772,13 @@ body{
       <div class="app-wordmark">
         BirOvoz <span class="amber-dot"></span>
       </div>
-      <span class="app-tagline">Uzbek &middot; Kazakh &middot; Voice Conversation</span>
+      <span class="app-tagline">English &rarr; Uzbek / Kazakh &middot; AI Dubbing</span>
     </div>
 
-    <!-- Language selector -->
-    <div class="lang-row app-reveal" role="group" aria-label="Language">
+    <!-- Dub target selector -->
+    <div class="app-reveal" aria-hidden="true"
+         style="text-align:center;margin:0 0 -8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;opacity:.55;">Dub&nbsp;to:</div>
+    <div class="lang-row app-reveal" role="group" aria-label="Dub to">
       <button class="lang-btn" data-lang="uz" onclick="setLang('uz')">
         <span class="lang-native">O'zbekcha</span>
         <span class="lang-en">Uzbek</span>
@@ -799,7 +801,7 @@ body{
       </button>
 
       <div class="status-area">
-        <div class="status-main" id="statusMain">Tap to speak</div>
+        <div class="status-main" id="statusMain">Speak English</div>
         <div class="status-timer" id="statusTimer">0:00</div>
         <div class="status-hint" id="statusHint">Tap once to start &middot; tap again to stop</div>
       </div>
@@ -817,7 +819,7 @@ body{
               <line x1="8"  y1="22" x2="16" y2="22"/>
             </svg>
           </div>
-          <p>Tap the microphone and speak in Uzbek or Kazakh to begin.</p>
+          <p>Tap the microphone and <strong>speak English</strong> — BirOvoz dubs your voice into Uzbek or Kazakh.</p>
         </div>
       </div>
     </div>
@@ -968,7 +970,7 @@ function setLang(lang) {
     b.classList.toggle('active', b.dataset.lang === lang);
   });
   if (state === STATE.IDLE) {
-    statusMain.textContent = lang === 'uz' ? "O'zbek tilida gapiring" : 'Қазақша сөйлеңіз';
+    statusMain.textContent = lang === 'uz' ? "Speak English → O'zbekcha" : 'Speak English → Қазақша';
   }
 }
 
@@ -1133,12 +1135,15 @@ function cleanupAudio() {
 /* ── Build request and send ────────────────────────────── */
 function buildAndSend() {
   setState(STATE.PROCESSING);
-  statusMain.textContent = language === 'uz' ? 'Yuborilmoqda…' : 'Жіберілуде…';
+  statusMain.textContent = 'Sending…';
   const blob = new Blob(audioChunks, {type: mediaRecorder.mimeType});
   const formData = new FormData();
   formData.append('audio', blob, 'recording.' + (blob.type.includes('webm') ? 'webm' : 'mp4'));
   formData.append('conversation_id', conversationId);
   formData.append('language', language);
+  // DUB1: this app is a dubbing flow — English in, target language out.
+  formData.append('mode', 'dub');
+  formData.append('source_language', 'en');
   lastFormData = formData;
   sendRequest(formData);
 }
@@ -1183,7 +1188,7 @@ function displayTurn(data) {
       '<svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' +
     '</div>' +
     '<div class="msg-body">' +
-      '<div class="msg-meta"><span class="msg-role">You</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
+      '<div class="msg-meta"><span class="msg-role">You · English</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
       '<div class="msg-text">' + escapeHtml(data.transcript) + '</div>' +
     '</div>';
   chatEl.appendChild(userDiv);
@@ -1197,7 +1202,7 @@ function displayTurn(data) {
       '<svg viewBox="0 0 24 24"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="22"/><line x1="8" y1="22" x2="16" y2="22"/></svg>' +
     '</div>' +
     '<div class="msg-body">' +
-      '<div class="msg-meta"><span class="msg-role">AI &middot; ' + langLabel + '</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
+      '<div class="msg-meta"><span class="msg-role">Dubbed &middot; ' + langLabel + '</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
       '<div class="msg-text">' + escapeHtml(data.response_text) +
         '<br><button class="play-again" data-audio-idx="' + audioIdx + '" onclick="playAudioByIndex(' + audioIdx + ',this)">' +
           '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again' +
@@ -1272,7 +1277,7 @@ function playAudio(base64Audio, btn) {
       // Autoplay blocked by the browser: point at the inline Play control
       // instead of failing silently. The mic stays usable.
       paintPlayButton(btn || latestPlayButton(), 'tap');
-      statusMain.textContent = language === 'uz' ? 'Javobni eshitish uchun Play tugmasini bosing' : 'Жауапты тыңдау үшін Play түймесін басыңыз';
+      statusMain.textContent = 'Tap Play on the dub to listen';
       statusHint.textContent = 'Autoplay blocked — tap Play on the reply';
     } else {
       console.error('Playback failed:', err);
@@ -1302,7 +1307,7 @@ function setState(s) {
   switch (s) {
     case STATE.IDLE:
       micIcon.innerHTML = ICONS.mic;
-      statusMain.textContent = language === 'uz' ? "Mikrofonga bosing" : 'Микрофонды басыңыз';
+      statusMain.textContent = 'Speak English — tap to record';
       statusHint.textContent = 'Tap once to start · tap again to stop';
       break;
     case STATE.RECORDING:
@@ -1311,7 +1316,7 @@ function setState(s) {
       progressRing.className = 'progress-ring show-red';
       micIcon.innerHTML = ICONS.stop;
       statusMain.className = 'status-main red';
-      statusMain.textContent = language === 'uz' ? 'Yozib olinmoqda…' : 'Жазылуда…';
+      statusMain.textContent = 'Recording English…';
       statusHint.textContent = 'Tap to stop recording';
       break;
     case STATE.PROCESSING:
@@ -1320,8 +1325,8 @@ function setState(s) {
       progressRing.className = 'progress-ring show-blue';
       micIcon.innerHTML = ICONS.spin;
       statusMain.className = 'status-main blue';
-      statusMain.textContent = language === 'uz' ? 'Tahlil qilinmoqda…' : 'Өңделуде…';
-      statusHint.textContent = 'STT → LLM → TTS';
+      statusMain.textContent = 'Dubbing…';
+      statusHint.textContent = 'English → STT → translate → TTS';
       break;
     case STATE.SPEAKING:
       micBtn.classList.add('speaking');
@@ -1330,7 +1335,7 @@ function setState(s) {
       progressRing.className = 'progress-ring show-green';
       micIcon.innerHTML = ICONS.wave;
       statusMain.className = 'status-main green';
-      statusMain.textContent = language === 'uz' ? 'Javob aytilmoqda…' : 'Жауап айтылуда…';
+      statusMain.textContent = 'Playing dubbed reply…';
       statusHint.textContent = 'Tap mic to interrupt';
       break;
     case STATE.ERROR:
