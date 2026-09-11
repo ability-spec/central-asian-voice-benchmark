@@ -256,3 +256,54 @@ def translate(text: str, source_language: str, target_language: str) -> str:
         return _mock_translate(text, target_language)
 
     return _openai_translate(text, target_language)
+
+
+# =========================================================================
+# DUB3 — sentence-level dubbing: split source into sentences, translate
+# each, so per-sentence TTS parts can overlap with playback.
+# =========================================================================
+
+import re
+from concurrent.futures import ThreadPoolExecutor
+
+# Split after sentence-ending punctuation followed by whitespace/end.
+# "3.5 dollars" stays intact because there is no space after the dot.
+_SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def split_sentences(text: str) -> list[str]:
+    """Deterministically split text into sentence chunks.
+
+    Empty input yields []. Single sentence without punctuation stays whole.
+    Spaced punctuation ("Hello . How ?") — common in STT output — is joined
+    to the preceding word before splitting.
+    """
+    cleaned = " ".join((text or "").strip().split())
+    cleaned = re.sub(r"\s+([.!?])", r"\1", cleaned)
+    if not cleaned:
+        return []
+    return [s for s in _SENT_SPLIT_RE.split(cleaned) if s]
+
+
+def translate_multi(
+    text: str, source_language: str, target_language: str
+) -> list[str]:
+    """Translate each source sentence independently (stateless).
+
+    Returns the list of translated sentences in source order. A single
+    sentence goes through the exact DUB1 `translate()` path, so single-turn
+    behaviour is bit-identical. Real-path calls run concurrently in a
+    stdlib thread pool (order preserved by ThreadPoolExecutor.map).
+    """
+    sents = split_sentences(text)
+    if not sents:
+        return []
+    if settings.mock_mode or len(sents) == 1:
+        return [translate(s, source_language, target_language) for s in sents]
+    with ThreadPoolExecutor(max_workers=min(4, len(sents))) as ex:
+        return list(
+            ex.map(
+                lambda s: translate(s, source_language, target_language),
+                sents,
+            )
+        )

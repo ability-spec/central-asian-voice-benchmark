@@ -12,21 +12,24 @@ Two flows:
 """
 
 import io
+import json
 import logging
 import asyncio
 import subprocess
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from product.backend.config import settings
 from product.backend.models import TurnRequest, TurnResponse
 from product.backend.services.stt import transcribe
-from product.backend.services.llm import respond, translate
-from product.backend.services.tts import synthesize_b64
+from product.backend.services.llm import respond, translate, translate_multi, split_sentences
+from product.backend.services.tts import synthesize_b64, concat_wav_b64
 from product.backend.services.score import score as score_transcript
 from product.backend.services.session import session_manager
 from product.backend.services.log_jsonl import log_turn
@@ -205,9 +208,13 @@ async def handle_turn(
 
     # --- 7. LLM: dub mode translates (stateless), chat mode converses ---
     t0 = time.time()
+    dub_parts: list = []
     try:
         if is_dub:
-            response_text = translate(transcript, stt_lang, language)
+            # DUB3: per-sentence translations enable overlapping per-part TTS.
+            # Single sentence -> exactly the DUB1 behaviour.
+            dub_parts = translate_multi(transcript, stt_lang, language)
+            response_text = " ".join(dub_parts)
             # Dubbing itself is stateless, but we still record the exchange so
             # turn numbering and the per-session turn cap keep working for the UI.
             session_manager.add_turn(conversation_id, "user", transcript)
@@ -220,15 +227,34 @@ async def handle_turn(
     llm_time = time.time() - t0
     logger.info("[%s] LLM (%s): %.2fs | response=%r", request_id, language, llm_time, response_text[:80])
 
-    # --- 8. TTS ---
+    # --- 8. TTS (DUB3: dub parts are synthesized concurrently in the
+    #     default executor — same thread-pool pattern as _to_wav — so the
+    #     wall time is ~ the longest sentence, not the sum of all of them) ---
     t0 = time.time()
+    audio_parts: list = []
     try:
-        audio_b64 = synthesize_b64(response_text, language)
+        if is_dub and len(dub_parts) > 1:
+            loop = asyncio.get_running_loop()
+            audio_parts = list(
+                await asyncio.gather(
+                    *(
+                        loop.run_in_executor(
+                            None, synthesize_b64, part, language
+                        )
+                        for part in dub_parts
+                    )
+                )
+            )
+            # Backward-compatible single-audio field: the full concatenated dub.
+            audio_b64 = concat_wav_b64(audio_parts)
+        else:
+            audio_b64 = synthesize_b64(response_text, language)
     except Exception as e:
         logger.error("[%s] TTS failed: %s", request_id, str(e))
         raise HTTPException(status_code=502, detail="Audio synthesis failed. Please try again.")
     tts_time = time.time() - t0
-    logger.info("[%s] TTS: %.2fs | audio size=%d bytes", request_id, tts_time, len(audio_b64))
+    logger.info("[%s] TTS: %.2fs | parts=%d | audio size=%d bytes",
+                request_id, tts_time, len(audio_parts), len(audio_b64))
 
     # --- 9. Score transcript against the optional reference ---
     scoring = score_transcript(reference_text, transcript)
@@ -245,6 +271,7 @@ async def handle_turn(
         transcript=transcript,
         response_text=response_text,
         audio=audio_b64,
+        audio_parts=(audio_parts or None),
         language=language,
         provider_info={
             "stt": f"{settings.stt_provider}/{settings.stt_model}",
@@ -254,6 +281,8 @@ async def handle_turn(
             # DUB1 observability: which flow produced this turn.
             "mode": "dub" if is_dub else "chat",
             "source_language": stt_lang,
+            # DUB3: how many dub sentence parts the queue carries (0 = chat).
+            "dub_sentences": len(dub_parts),
         },
         wer=scoring["wer"],
         cer=scoring["cer"],
@@ -294,3 +323,229 @@ async def handle_turn(
             pass
 
     return response
+
+
+# =========================================================================
+# DUB2 — minimal streaming transport (NDJSON) over POST.
+#
+# Same validation and pipeline as /api/turn, but each dub sentence part is
+# delivered the moment it is ready (meta → part* → done). /api/turn is
+# preserved untouched for legacy clients. No WebSockets, no new deps.
+# =========================================================================
+
+
+class DubJobRunner:
+    """Order-preserving per-sentence job runner with pending-work cancel.
+
+    Each job runs translate→TTS for one sentence in a worker thread. The
+    consumer awaits futures IN ORDER, so parts arrive ordered even though
+    work happens in parallel. cancel_pending() cancels jobs that have not
+    started yet (in-flight threads are left to finish and are discarded).
+    """
+
+    def __init__(self, items, job_fn, max_workers: int = 4):
+        self._ex = ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(items))))
+        self._lock = threading.Lock()
+        self.started = 0
+        self._futures = [self._ex.submit(self._run, job_fn, it) for it in items]
+
+    def _run(self, fn, item):
+        with self._lock:
+            self.started += 1
+        return fn(item)
+
+    def future(self, i: int):
+        return self._futures[i]
+
+    def cancel_pending(self) -> int:
+        """Return the number of not-yet-started jobs that were cancelled."""
+        n = 0
+        for f in self._futures:
+            if f.cancel():
+                n += 1
+        return n
+
+    def shutdown(self):
+        self._ex.shutdown(wait=False)
+
+
+def _ndjson(obj: dict) -> bytes:
+    return (json.dumps(obj, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+@router.post("/turn/stream")
+async def handle_turn_stream(
+    audio: UploadFile = File(...),
+    conversation_id: str = Form(...),
+    language: str = Form(...),
+    reference_text: str = Form(""),
+    mode: str = Form("dub"),
+    source_language: str = Form(""),
+):
+    """Streaming counterpart of /api/turn (DUB2). NDJSON events:
+       {"type":"meta", transcript, stt_ms, ...}
+       {"type":"part", index, text, audio}      (as soon as each is ready)
+       {"type":"done", response_text, audio, *_ms, wer, cer, scored, ...}
+       {"type":"error", detail}                  (after headers were sent)
+    """
+    request_id = uuid.uuid4().hex[:8]
+    logger.info("[%s] Stream turn start | conv=%s lang=%s", request_id, conversation_id, language)
+
+    # --- Same validation as /api/turn (before the response starts) ---
+    if language not in ("uz", "kk"):
+        raise HTTPException(status_code=400, detail=f"Invalid language '{language}'. Must be 'uz' or 'kk'.")
+    mode = mode.strip().lower()
+    source_language = source_language.strip().lower()
+    if mode not in ("", "chat", "dub"):
+        raise HTTPException(status_code=400, detail=f"Invalid mode '{mode}'. Must be 'dub', 'chat' or empty.")
+    if source_language and source_language not in ("en", "uz", "kk"):
+        raise HTTPException(status_code=400, detail=f"Invalid source_language '{source_language}'. Must be 'en', 'uz', 'kk' or empty.")
+    is_dub = mode == "dub"
+    if is_dub and source_language not in ("", "en"):
+        raise HTTPException(status_code=400, detail="Dub mode (DUB1) accepts English source speech only.")
+    stt_lang = "en" if is_dub else (source_language or language)
+
+    audio_bytes = await audio.read()
+    if len(audio_bytes) == 0:
+        raise HTTPException(status_code=400, detail="Empty audio file.")
+    if len(audio_bytes) > settings.max_audio_size_mb * 1024 * 1024:
+        raise HTTPException(status_code=413, detail=f"Audio too large. Max {settings.max_audio_size_mb} MB.")
+    estimated_duration = _get_audio_duration_seconds(audio_bytes, audio.content_type or "audio/wav")
+    if estimated_duration > settings.max_audio_duration_seconds:
+        raise HTTPException(status_code=413, detail=f"Audio too long ({estimated_duration:.1f}s). Max {settings.max_audio_duration_seconds}s.")
+
+    if session_manager.is_max_turns_reached(conversation_id):
+        raise HTTPException(
+            status_code=429,
+            detail=f"Session '{conversation_id}' has reached the maximum of {settings.max_turns_per_session} turns.",
+        )
+
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    ext = "webm" if audio.content_type and "webm" in audio.content_type else "wav"
+    raw_path = settings.upload_dir / f"{request_id}_{conversation_id}_{language}_sraw.{ext}"
+    wav_path = settings.upload_dir / f"{request_id}_{conversation_id}_{language}_snorm.wav"
+    with open(raw_path, "wb") as f:
+        f.write(audio_bytes)
+    try:
+        await _to_wav(raw_path, wav_path)
+    except Exception as e:
+        logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
+        raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
+
+    async def generate():
+        loop = asyncio.get_running_loop()
+        runner = None
+        t_all = time.time()
+        try:
+            t0 = time.time()
+            try:
+                transcript = await loop.run_in_executor(None, transcribe, wav_path, stt_lang, "audio/wav")
+            except Exception as e:
+                logger.error("[%s] Stream STT failed: %s", request_id, str(e))
+                yield _ndjson({"type": "error", "detail": "Speech transcription failed. Please try again."})
+                return
+            stt_ms = round((time.time() - t0) * 1000)
+            yield _ndjson({"type": "meta", "request_id": request_id, "transcript": transcript,
+                           "language": language, "mode": "dub" if is_dub else "chat",
+                           "source_language": stt_lang, "stt_ms": stt_ms})
+
+            texts, parts_b64, tr_ms, ts_ms = [], [], 0, 0
+            t1 = time.time()
+            if is_dub:
+                sents = split_sentences(transcript) or [transcript]
+
+                def _job(sent):
+                    a = time.time()
+                    txt = translate(sent, stt_lang, language)
+                    b = time.time()
+                    wav_b64 = synthesize_b64(txt, language)
+                    c = time.time()
+                    return {"text": txt, "audio": wav_b64,
+                            "tr_ms": round((b - a) * 1000), "ts_ms": round((c - b) * 1000)}
+
+                runner = DubJobRunner(sents, _job, max_workers=4)
+                try:
+                    for i in range(len(sents)):
+                        fut = runner.future(i)
+                        while not fut.done():
+                            await asyncio.sleep(0.02)
+                        part = fut.result()
+                        texts.append(part["text"])
+                        parts_b64.append(part["audio"])
+                        tr_ms += part["tr_ms"]
+                        ts_ms += part["ts_ms"]
+                        # ordered delivery: part i is emitted only after i-1
+                        yield _ndjson({"type": "part", "index": i,
+                                       "text": part["text"], "audio": part["audio"],
+                                       "at_ms": round((time.time() - t_all) * 1000)})
+                finally:
+                    if runner is not None:
+                        # Normal end: nothing left to cancel. Client gone /
+                        # failure mid-stream: drop every not-yet-started job.
+                        runner.cancel_pending()
+                        runner.shutdown()
+                        runner = None
+                response_text = " ".join(texts)
+                session_manager.add_turn(conversation_id, "user", transcript)
+                session_manager.add_turn(conversation_id, "assistant", response_text)
+                audio_b64 = concat_wav_b64(parts_b64)
+            else:
+                reply = await loop.run_in_executor(None, respond, conversation_id, transcript, language)
+                audio_b64 = await loop.run_in_executor(None, synthesize_b64, reply, language)
+                response_text, texts, parts_b64 = reply, [reply], [audio_b64]
+                yield _ndjson({"type": "part", "index": 0, "text": reply,
+                               "audio": audio_b64,
+                               "at_ms": round((time.time() - t_all) * 1000)})
+
+            pipeline_ms = round((time.time() - t1) * 1000)
+            llm_ms = tr_ms if is_dub else pipeline_ms
+            tts_ms = ts_ms if is_dub else 0
+            scoring = score_transcript(reference_text, transcript)
+            turn_number = session_manager.get_turn_count(conversation_id)
+            provider = {
+                "stt": f"{settings.stt_provider}/{settings.stt_model}",
+                "llm": f"{settings.llm_provider}/{settings.llm_model}",
+                "tts": f"{settings.tts_provider}/{settings.tts_model}",
+                "mock_mode": settings.mock_mode,
+                "mode": "dub" if is_dub else "chat",
+                "source_language": stt_lang,
+                "dub_sentences": len(texts),
+            }
+            yield _ndjson({"type": "done", "conversation_id": conversation_id,
+                           "turn_number": turn_number, "response_text": response_text,
+                           "audio": audio_b64, "audio_parts": parts_b64 if len(parts_b64) > 1 else None,
+                           "language": language, "provider_info": provider,
+                           "wer": scoring["wer"], "cer": scoring["cer"], "scored": scoring["scored"],
+                           "stt_ms": stt_ms, "llm_ms": llm_ms, "tts_ms": tts_ms,
+                           "total_ms": stt_ms + pipeline_ms})
+            log_turn(
+                request_id=request_id, conversation_id=conversation_id,
+                language=language, turn_number=turn_number, stt_ms=stt_ms,
+                llm_ms=llm_ms, tts_ms=tts_ms,
+                transcript_len=len(transcript), response_len=len(response_text),
+                audio_bytes=len(audio_b64), mock_mode=settings.mock_mode,
+            )
+            logger.info("[%s] Stream done | parts=%d", request_id, len(parts_b64))
+        except (asyncio.CancelledError, GeneratorExit):
+            # DUB2: client went away (barge-in / end session) — stop pending work.
+            if runner is not None:
+                cancelled = runner.cancel_pending()
+                runner.shutdown()
+                logger.info("[%s] Stream cancelled by client; %d pending jobs dropped",
+                            request_id, cancelled)
+            raise
+        except Exception as e:
+            logger.error("[%s] Stream pipeline failed: %s", request_id, str(e))
+            try:
+                yield _ndjson({"type": "error", "detail": "Response generation failed. Please try again."})
+            except Exception:
+                pass
+        finally:
+            for _path in (raw_path, wav_path):
+                try:
+                    _path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

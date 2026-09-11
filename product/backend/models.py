@@ -28,6 +28,13 @@ class TurnResponse(BaseModel):
     transcript: str
     response_text: str
     audio: str  # base64-encoded WAV audio bytes
+    # DUB3: per-sentence base64 WAV parts for queue playback (dub mode only).
+    # `audio` stays the full concatenated dub, so older consumers are
+    # unaffected; None whenever parts do not apply.
+    audio_parts: Optional[list] = Field(
+        default=None,
+        description="Per-sentence base64 WAV parts (dub mode, >1 sentence)",
+    )
     language: str
     provider_info: dict = Field(
         default_factory=dict,

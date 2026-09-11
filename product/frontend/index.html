@@ -801,7 +801,7 @@ body{
       </button>
 
       <div class="status-area">
-        <div class="status-main" id="statusMain">Speak English</div>
+        <div class="status-main" id="statusMain">Tap the mic — hands-free starts</div>
         <div class="status-timer" id="statusTimer">0:00</div>
         <div class="status-hint" id="statusHint">Tap once to start &middot; tap again to stop</div>
       </div>
@@ -819,7 +819,7 @@ body{
               <line x1="8"  y1="22" x2="16" y2="22"/>
             </svg>
           </div>
-          <p>Tap the microphone and <strong>speak English</strong> — BirOvoz dubs your voice into Uzbek or Kazakh.</p>
+          <p>Tap the microphone and <strong>speak English</strong> — BirOvoz dubs you hands-free: it keeps listening between turns. Tap again to end.</p>
         </div>
       </div>
     </div>
@@ -892,8 +892,17 @@ let recordingSeconds = 0;
 let currentAudio = null;
 let currentAudioUrl = null;
 let turnAudio = []; // base64 TTS audio per AI turn (by index, never inlined in DOM)
+/* DUB3: sequential playback queue over per-sentence audio parts. */
+let dubQueue = {parts: [], idx: 0, btn: null, active: false};
+/* DUB4: continuous hands-free session state. */
+let continuous = false;      // session loop: keep re-arming the mic each turn
+let silentRunMs = 0;         // accumulated armed-silence in the current gap
+let processingInFlight = false;  // at most one /api/turn request at a time
+let restartPending = false;  // silence-cycle: re-arm on recorder stop
 let lastFormData = null;
 let turnNumber = 0;
+/* DUB2: in-flight NDJSON stream control (aborted by barge-in / session end). */
+let streamCtrl = null;
 
 // Web Audio for waveform
 let audioCtx = null;
@@ -1010,6 +1019,35 @@ function hudLine(data) {
 }
 /* == VAD-CORE-END == */
 
+/* == DUB3-CORE-START == */
+/* Pure queue planner for sentence-level playback. DOM-free and extracted
+   verbatim by tests/test_dub3.py. Returns the ordered list of base64 WAV
+   parts to play: per-sentence parts when dub mode produced more than one,
+   otherwise the legacy single `audio` (DUB1 path, unchanged). */
+function playbackPlan(data) {
+  if (data && Array.isArray(data.audio_parts) && data.audio_parts.length > 1) {
+    return data.audio_parts.slice();
+  }
+  return (data && data.audio) ? [data.audio] : [];
+}
+/* == DUB3-CORE-END == */
+
+/* == DUB4-CORE-START == */
+/* Pure policy pieces for the continuous hands-free loop. DOM-free and
+   extracted verbatim by tests/test_dub4_continuous.py. The loop itself
+   reuses the VAD-CORE state machine — nothing here re-implements it. */
+const CONTINUOUS_CFG = {
+  maxSilentRunMs: 12000,   // end the session after ~2 silent 6 s arm windows
+};
+function shouldEndOnSilence(silentRunMs, cfg) {
+  cfg = cfg || CONTINUOUS_CFG;
+  return silentRunMs >= cfg.maxSilentRunMs;
+}
+function nextPhaseAfterTurn(continuous) {
+  return continuous ? 'listen' : 'idle';
+}
+/* == DUB4-CORE-END == */
+
 /* ── VAD runtime (DOM side; core logic above stays pure) ── */
 let micStream = null;        // live getUserMedia stream, reused across barge-in
 let micMimeType = null;
@@ -1059,6 +1097,7 @@ function stopVadLoop() {
 
 function onCaptureEvent(ev) {
   if (ev === 'speech-start') {
+    silentRunMs = 0;
     setState(STATE.RECORDING);
     startTimer();
   } else if (ev === 'utterance-complete' || ev === 'force-stop') {
@@ -1070,7 +1109,56 @@ function onCaptureEvent(ev) {
   } else if (ev === 'timeout') {
     captureAction = 'discard';
     noSpeechTimeout = true;
+    // DUB4: in a hands-free session, silence just re-arms the mic — until
+    // the cumulative silence budget is spent, then the session ends.
+    if (continuous && !shouldEndOnSilence(silentRunMs + VAD_CFG.armTimeoutMs, CONTINUOUS_CFG)) {
+      silentRunMs += VAD_CFG.armTimeoutMs;
+      restartPending = true;
+    } else {
+      continuous = false;
+      silentRunMs = 0;
+    }
     stopCapture();
+  }
+}
+
+function beginListening() {
+  captureAction = 'send';
+  noSpeechTimeout = false;
+  attachRecorder();
+  setState(STATE.LISTENING);
+  statusMain.textContent = 'Listening — speak now';
+  statusHint.textContent = continuous
+    ? 'Hands-free on · pause ~1 s to send · tap to end'
+    : 'Pause ~1 s to send · or tap to stop';
+  startWaveform();
+  startVadLoop('capture');
+}
+
+/* DUB4: single exit point of a dub turn — resume listening in a hands-free
+   session, otherwise release the mic and go idle. */
+function onTurnFinished() {
+  if (continuous && micStream && !processingInFlight) {
+    silentRunMs = 0;
+    beginListening();
+    return;
+  }
+  if (state === STATE.SPEAKING) setState(STATE.IDLE);
+  releaseMic();
+}
+
+/* DUB4: end the hands-free session (tap while LISTENING, or errors). */
+function endHandsFree() {
+  continuous = false;
+  silentRunMs = 0;
+  restartPending = false;
+  captureAction = 'discard';
+  cancelStream();  // DUB2: a session end also aborts an in-flight stream
+  stopVadLoop();
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    stopCapture();           // onstop discards, releases mic, sets idle
+  } else {
+    if (!processingInFlight) { releaseMic(); setState(STATE.IDLE); }
   }
 }
 
@@ -1080,6 +1168,7 @@ function onBargeEvent(ev) {
     statusMain.textContent = 'Barge-in — keep talking to interrupt';
   } else if (ev === 'barge-commit') {
     stopVadLoop();
+    cancelStream();  // DUB3+DUB2: cancel the whole queue AND the pending stream
     if (currentAudio) {
       try { currentAudio.onended = null; currentAudio.onerror = null; currentAudio.pause(); } catch (e) {}
     }
@@ -1087,13 +1176,7 @@ function onBargeEvent(ev) {
     currentAudio = null;
     resetPlayButtons();
     // Mic is already open — attach a fresh recorder and listen immediately.
-    captureAction = 'send';
-    noSpeechTimeout = false;
-    attachRecorder();
-    setState(STATE.LISTENING);
-    statusMain.textContent = 'Listening — speak now';
-    startWaveform();
-    startVadLoop('capture');
+    beginListening();
   } else if (ev === 'barge-release') {
     if (currentAudio) { currentAudio.play().catch(() => {}); }
     statusMain.textContent = 'Playing dubbed reply…';
@@ -1163,12 +1246,16 @@ function setLang(lang) {
 /* ── Mic button ────────────────────────────────────────── */
 function toggleMic() {
   if (state === STATE.IDLE) startRecording();
-  else if (state === STATE.LISTENING || state === STATE.RECORDING) stopRecording();
+  // DUB4: tap while LISTENING (no speech yet) ends the hands-free session;
+  // tap while RECORDING still force-sends the in-flight utterance (manual).
+  else if (state === STATE.LISTENING) endHandsFree();
+  else if (state === STATE.RECORDING) stopRecording();
   else if (state === STATE.SPEAKING) bargeIn();
 }
 
 /* ── Barge-in: interrupt the AI reply and start recording ── */
 function bargeIn() {
+  cancelStream();  // DUB2: abort in-flight stream + drop queued parts (server cancels pending jobs)
   if (currentAudio) {
     try { currentAudio.onended = null; } catch (e) {}
     try { currentAudio.pause(); } catch (e) {}
@@ -1231,6 +1318,14 @@ function attachRecorder() {
     if (captureAction === 'discard' || audioChunks.length === 0) {
       const timedOut = noSpeechTimeout;
       captureAction = 'send'; noSpeechTimeout = false;
+      if (restartPending && timedOut) {
+        // DUB4 silence cycle: the pre-roll chunks are thrown away and the
+        // mic immediately re-arms — no tap needed, no request is made.
+        restartPending = false;
+        beginListening();
+        return;
+      }
+      restartPending = false;
       releaseMic();
       setState(STATE.IDLE);
       statusMain.textContent = timedOut
@@ -1253,13 +1348,9 @@ async function startRecording() {
   try {
     await openMic();
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
-    captureAction = 'send';
-    noSpeechTimeout = false;
-    attachRecorder();
-    setState(STATE.LISTENING);
-    statusMain.textContent = 'Listening — speak now';
-    startWaveform();
-    startVadLoop('capture');
+    continuous = true;      // DUB4: tapping the mic starts a hands-free session
+    silentRunMs = 0;
+    beginListening();
   } catch (err) {
     releaseMic();
     setState(STATE.IDLE);
@@ -1355,6 +1446,12 @@ function cleanupAudio() {
 
 /* ── Build request and send ────────────────────────────── */
 function buildAndSend() {
+  if (processingInFlight) {
+    // DUB4: never overlap /api/turn requests; this utterance is dropped
+    // explicitly rather than queued silently (demo-predictable behavior).
+    statusMain.textContent = 'Still processing — finish current dub first';
+    return;
+  }
   setState(STATE.PROCESSING);
   statusMain.textContent = 'Sending…';
   const blob = new Blob(audioChunks, {type: mediaRecorder.mimeType});
@@ -1370,21 +1467,92 @@ function buildAndSend() {
 }
 
 async function sendRequest(formData) {
+  // DUB2: consume the NDJSON stream from /api/turn/stream. The first audio
+  // part starts playback while later sentences are still being synthesized.
+  processingInFlight = true;
+  const ctrl = new AbortController();
+  streamCtrl = ctrl;
+  const meta = {};
+  const parts = [], texts = [];
+  dubQueue = {parts: parts, idx: 0, btn: null, active: true, streaming: true, closed: false};
+  let armed = false, doneData = null;
   try {
-    const res = await fetch(API_BASE + '/api/turn', {method:'POST', body:formData});
+    const res = await fetch(API_BASE + '/api/turn/stream', {method:'POST', body:formData, signal:ctrl.signal});
     if (!res.ok) {
-      const err = await res.json();
-      throw new Error(err.detail || 'HTTP ' + res.status);
+      let d = 'HTTP ' + res.status;
+      try { const j = await res.json(); if (j && j.detail) d = j.detail; } catch (e) {}
+      throw new Error(d);
     }
-    const data = await res.json();
-    turnNumber = data.turn_number;
-    displayTurn(data);
-    playResponse(data.audio);
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let bufTxt = '';
+    while (true) {
+      const rd = await reader.read();
+      if (rd.done) break;
+      bufTxt += dec.decode(rd.value, {stream: true});
+      let nl;
+      while ((nl = bufTxt.indexOf('\n')) >= 0) {
+        const line = bufTxt.slice(0, nl).trim();
+        bufTxt = bufTxt.slice(nl + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line);
+        if (ev.type === 'meta') {
+          Object.assign(meta, ev);
+        } else if (ev.type === 'part') {
+          parts.push(ev.audio); texts.push(ev.text);
+          if (!armed) { armed = true; setState(STATE.SPEAKING); playQueueNext(); }
+          else { pumpQueue(); }
+          statusHint.textContent = '\u{1F50A} ' + ev.text;  // live caption
+        } else if (ev.type === 'done') {
+          doneData = ev;
+          dubQueue.closed = true;
+          const data = {
+            conversation_id: ev.conversation_id, turn_number: ev.turn_number,
+            transcript: meta.transcript || '', response_text: ev.response_text,
+            audio: ev.audio, audio_parts: null, language: ev.language,
+            provider_info: ev.provider_info || {},
+            wer: ev.wer, cer: ev.cer, scored: ev.scored,
+            stt_ms: ev.stt_ms, llm_ms: ev.llm_ms, tts_ms: ev.tts_ms, total_ms: ev.total_ms,
+          };
+          turnNumber = data.turn_number;
+          displayTurn(data);
+          pumpQueue();
+        } else if (ev.type === 'error') {
+          throw new Error(ev.detail || 'Streaming pipeline error');
+        }
+      }
+    }
+    if (!doneData && state !== STATE.ERROR) {
+      dubQueue.closed = true;
+      pumpQueue();   // stream truncated: drain what arrived, then finish the turn
+    }
   } catch (err) {
+    if (err && err.name === 'AbortError') {
+      // DUB2: barge-in / end-session cancelled the stream — stop silently.
+      dubQueue.active = false;
+      return;
+    }
+    dubQueue.active = false;
     console.error('Request failed:', err);
     setState(STATE.ERROR);
     showError(err.message || 'Something went wrong. Tap Retry or record again.');
+  } finally {
+    processingInFlight = false;
+    if (streamCtrl === ctrl) streamCtrl = null;
   }
+}
+
+function cancelStream() {
+  // DUB2: barge-in / session end must stop the pending stream AND the
+  // queued parts; the server drops its not-yet-started sentence jobs.
+  if (streamCtrl) { try { streamCtrl.abort(); } catch (e) {} }
+  dubQueue.active = false;
+}
+
+function pumpQueue() {
+  if (!dubQueue.active || currentAudio) return;
+  if (dubQueue.idx < dubQueue.parts.length ||
+      (dubQueue.streaming && dubQueue.closed)) playQueueNext();
 }
 
 function retryLast() {
@@ -1454,9 +1622,37 @@ function latestPlayButton() {
   return btns.length ? btns[btns.length - 1] : null;
 }
 
-function playResponse(base64Audio) {
+function playResponse(data) {
   setState(STATE.SPEAKING);
-  playAudio(base64Audio, latestPlayButton());
+  const btn = latestPlayButton();
+  const plan = playbackPlan(data);   // >1 sentence -> dub queue; else legacy single audio
+  if (plan.length === 0) {
+    if (state === STATE.SPEAKING) setState(STATE.IDLE);
+    releaseMic();
+    return;
+  }
+  if (plan.length === 1) {
+    playAudio(plan[0], btn);
+    return;
+  }
+  dubQueue = {parts: plan, idx: 0, btn: btn, active: true};
+  playQueueNext();
+}
+
+function playQueueNext() {
+  if (!dubQueue.active) return;
+  if (dubQueue.idx >= dubQueue.parts.length) {
+    // DUB2: stream still open — wait for the next part instead of ending.
+    if (dubQueue.streaming && !dubQueue.closed) return;
+    dubQueue.active = false;
+    resetPlayButtons();
+    onTurnFinished();   // DUB4: resume listening in a hands-free session
+    return;
+  }
+  const part = dubQueue.parts[dubQueue.idx];
+  statusHint.textContent = 'Sentence ' + (dubQueue.idx + 1) + ' of ' + dubQueue.parts.length;
+  dubQueue.idx++;
+  playAudio(part, dubQueue.btn, /* chain */ true);
 }
 
 function playAudioByIndex(idx, btn) {
@@ -1465,7 +1661,7 @@ function playAudioByIndex(idx, btn) {
   playAudio(b64, btn);
 }
 
-function playAudio(base64Audio, btn) {
+function playAudio(base64Audio, btn, chain) {
   if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
   if (currentAudio)    { currentAudio.pause(); currentAudio = null; }
 
@@ -1485,14 +1681,28 @@ function playAudio(base64Audio, btn) {
   }
 
   const cleanup = () => {
-    if (state === STATE.SPEAKING) setState(STATE.IDLE);
+    if (!chain) {
+      if (state === STATE.SPEAKING) setState(STATE.IDLE);
+      paintPlayButton(btn, 'idle');
+    }
     URL.revokeObjectURL(url);
     currentAudio = null; currentAudioUrl = null;
-    paintPlayButton(btn, 'idle');
   };
 
-  audio.onended = () => { cleanup(); releaseMic(); };
-  audio.onerror = () => { cleanup(); releaseMic(); showError('Failed to play audio response.'); };
+  audio.onended = () => {
+    cleanup();
+    // DUB3: while the queue is active, a finished part chains to the next
+    // one instead of returning to idle. End of audio owns the next step:
+    // DUB4 resumes the hands-free loop or releases the mic.
+    if (chain && dubQueue.active) { playQueueNext(); return; }
+    onTurnFinished();
+  };
+  audio.onerror = () => {
+    dubQueue.active = false;   // abort the queue on a broken part
+    cleanup();
+    releaseMic();
+    showError('Failed to play audio response.');
+  };
   audio.play().then(() => {
     // DUB4: voice barge-in is live while the dub plays. The mic is already
     // open (reused from capture), so onset detection starts instantly.
@@ -1589,6 +1799,11 @@ function setState(s) {
 
 /* ── Error helpers ─────────────────────────────────────── */
 function showError(msg) {
+  // DUB4: any error ends the hands-free session — the loop never retries
+  // behind the user's back. Tapping the mic afterwards starts a fresh one.
+  continuous = false;
+  silentRunMs = 0;
+  restartPending = false;
   stopVadLoop();
   releaseMic();
   errorMsg.textContent = msg;
