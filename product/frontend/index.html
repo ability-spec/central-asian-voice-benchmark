@@ -867,7 +867,7 @@ function resolveApiBase() {
 }
 const API_BASE = resolveApiBase();
 
-const STATE = {IDLE:'idle',RECORDING:'recording',PROCESSING:'processing',SPEAKING:'speaking',ERROR:'error'};
+const STATE = {IDLE:'idle',LISTENING:'listening',RECORDING:'recording',PROCESSING:'processing',SPEAKING:'speaking',ERROR:'error'};
 let state = STATE.IDLE;
 let language = 'kk';
 function newConversationId() {
@@ -886,6 +886,7 @@ function newConversationId() {
 let conversationId = newConversationId();
 let mediaRecorder = null;
 let audioChunks = [];
+let noSpeechTimeout = false;
 let recordingTimer = null;
 let recordingSeconds = 0;
 let currentAudio = null;
@@ -913,6 +914,191 @@ const errorMsg   = $('#errorMsg');
 const progressRing = $('#progressRing');
 const micStage   = $('#micStage');
 const canvas     = $('#waveCanvas');
+
+/* == VAD-CORE-START == */
+/* Pure, DOM-free VAD + HUD logic. Extracted verbatim by
+   tests/test_frontend_dub4.py and driven under node with scripted frames.
+   Energy signal = mean |byte - 128| over a getByteTimeDomainData buffer
+   (0 = digital silence, ~125 = full scale). */
+const VAD_CFG = {
+  frameMsMin: 5, frameMsMax: 100,     // clamp rAF deltas (tab throttling)
+  speechRms: 12, silenceRms: 7,       // hysteresis band
+  onsetFrames: 3,                     // voiced frames before speech-start
+  utterEndMs: 850,                    // trailing silence that closes an utterance
+  minSpeechMs: 450,                   // less speech than this = blip, discard
+  blipEndMs: 400,                     // silence that confirms a blip
+  armTimeoutMs: 6000,                 // tapped but never spoke -> cancel
+  maxCaptureMs: 35000,                // hard cap incl. pre-roll
+  bargeRms: 20,                       // stricter bar: guard vs speaker bleed
+  bargeOnsetFrames: 4,
+  bargeMinSpeechMs: 500,              // commit barge only on real speech
+  bargeEndMs: 350,                    // quiet again before commit -> resume
+};
+function vadRms(bytes) {
+  let s = 0;
+  for (let i = 0; i < bytes.length; i++) s += Math.abs(bytes[i] - 128);
+  return s / bytes.length;
+}
+function newCapture() {
+  return {inSpeech: false, speechMs: 0, silenceMs: 0, onsetFrames: 0, armedMs: 0};
+}
+function captureStep(st, rms, dt, cfg) {
+  cfg = cfg || VAD_CFG;
+  dt = Math.min(cfg.frameMsMax, Math.max(cfg.frameMsMin, dt));
+  if (!st.inSpeech) {
+    st.armedMs += dt;
+    if (rms >= cfg.speechRms) st.onsetFrames++; else st.onsetFrames = 0;
+    if (st.onsetFrames >= cfg.onsetFrames) {
+      st.inSpeech = true; st.speechMs = 0; st.silenceMs = 0;
+      return {next: st, event: 'speech-start'};
+    }
+    if (st.armedMs >= cfg.armTimeoutMs) return {next: st, event: 'timeout'};
+    return {next: st, event: null};
+  }
+  // Count only VOICED time as speech; silence accumulates separately.
+  if (rms > cfg.silenceRms) { st.speechMs += dt; st.silenceMs = 0; }
+  else if (rms <= cfg.silenceRms) { st.silenceMs += dt; }
+  if (st.speechMs + st.silenceMs >= cfg.maxCaptureMs) {
+    return {next: {...newCapture(), armedMs: st.armedMs}, event: 'force-stop'};
+  }
+  if (st.speechMs < cfg.minSpeechMs && st.silenceMs >= cfg.blipEndMs) {
+    // Too short to be a real utterance: re-arm, but keep the timeout clock
+    // running so a noisy room cannot hold the mic open forever.
+    return {next: {...newCapture(), armedMs: st.armedMs}, event: 'blip-cancel'};
+  }
+  if (st.speechMs >= cfg.minSpeechMs && st.silenceMs >= cfg.utterEndMs) {
+    return {next: newCapture(), event: 'utterance-complete'};  // one-shot
+  }
+  return {next: st, event: null};
+}
+function newBarge() {
+  return {started: false, frames: 0, speechMs: 0, silenceMs: 0, committed: false};
+}
+function bargeStep(st, rms, dt, cfg) {
+  cfg = cfg || VAD_CFG;
+  dt = Math.min(cfg.frameMsMax, Math.max(cfg.frameMsMin, dt));
+  if (!st.started) {
+    if (rms >= cfg.bargeRms) st.frames++; else st.frames = 0;
+    if (st.frames >= cfg.bargeOnsetFrames) {
+      st.started = true; st.speechMs = 0; st.silenceMs = 0;
+      return {next: st, event: 'barge-start'};
+    }
+    return {next: st, event: null};
+  }
+  if (rms >= cfg.speechRms) { st.speechMs += dt; st.silenceMs = 0; }
+  else if (rms <= cfg.silenceRms) { st.silenceMs += dt; }
+  if (st.speechMs >= cfg.bargeMinSpeechMs && !st.committed) {
+    st.committed = true;
+    return {next: st, event: 'barge-commit'};   // caller stops the loop
+  }
+  if (st.silenceMs >= cfg.bargeEndMs && st.speechMs < cfg.bargeMinSpeechMs) {
+    return {next: newBarge(), event: 'barge-release'};  // one-shot, re-armed
+  }
+  return {next: st, event: null};
+}
+function fmtMs(ms) {
+  ms = Math.round(ms);
+  return ms < 1000 ? ms + 'ms' : (ms / 1000).toFixed(1) + 's';
+}
+function hudLine(data) {
+  if (!data) return '';
+  const f = ['stt_ms', 'llm_ms', 'tts_ms', 'total_ms'].map(k => data[k]);
+  if (f.some(v => typeof v !== 'number' || !isFinite(v))) return '';
+  if (f[3] <= 0) return '';
+  return 'STT ' + fmtMs(f[0]) + ' · AI ' + fmtMs(f[1]) +
+         ' · TTS ' + fmtMs(f[2]) + ' · Σ ' + fmtMs(f[3]);
+}
+/* == VAD-CORE-END == */
+
+/* ── VAD runtime (DOM side; core logic above stays pure) ── */
+let micStream = null;        // live getUserMedia stream, reused across barge-in
+let micMimeType = null;
+let vadPhase = 'off';        // 'off' | 'capture' | 'barge'
+let vadAnimId = null;
+let vadLastTs = 0;
+let captureState = newCapture();
+let bargeState = newBarge();
+let vadBytes = null;
+let captureAction = 'send';  // 'send' | 'discard' at recorder stop
+
+function startVadLoop(phase) {
+  stopVadLoop();
+  if (!analyser) return;
+  vadPhase = phase;
+  vadBytes = new Uint8Array(analyser.fftSize);
+  vadLastTs = performance.now();
+  if (phase === 'capture') captureState = newCapture();
+  if (phase === 'barge')   bargeState = newBarge();
+  function tick() {
+    vadAnimId = requestAnimationFrame(tick);
+    const now = performance.now();
+    const dt = now - vadLastTs;
+    vadLastTs = now;
+    const active = (vadPhase === 'capture' &&
+        (state === STATE.LISTENING || state === STATE.RECORDING)) ||
+      (vadPhase === 'barge' && state === STATE.SPEAKING);
+    if (!active) return;
+    analyser.getByteTimeDomainData(vadBytes);
+    const rms = vadRms(vadBytes);
+    if (vadPhase === 'capture') {
+      const r = captureStep(captureState, rms, dt, VAD_CFG);
+      captureState = r.next;
+      if (r.event) onCaptureEvent(r.event);
+    } else {
+      const r = bargeStep(bargeState, rms, dt, VAD_CFG);
+      bargeState = r.next;
+      if (r.event) onBargeEvent(r.event);
+    }
+  }
+  tick();
+}
+function stopVadLoop() {
+  if (vadAnimId) { cancelAnimationFrame(vadAnimId); vadAnimId = null; }
+  vadPhase = 'off';
+}
+
+function onCaptureEvent(ev) {
+  if (ev === 'speech-start') {
+    setState(STATE.RECORDING);
+    startTimer();
+  } else if (ev === 'utterance-complete' || ev === 'force-stop') {
+    captureAction = 'send';
+    stopCapture();
+  } else if (ev === 'blip-cancel') {
+    setState(STATE.LISTENING);
+    statusMain.textContent = 'Listening — speak now';
+  } else if (ev === 'timeout') {
+    captureAction = 'discard';
+    noSpeechTimeout = true;
+    stopCapture();
+  }
+}
+
+function onBargeEvent(ev) {
+  if (ev === 'barge-start') {
+    if (currentAudio) { try { currentAudio.pause(); } catch (e) {} }
+    statusMain.textContent = 'Barge-in — keep talking to interrupt';
+  } else if (ev === 'barge-commit') {
+    stopVadLoop();
+    if (currentAudio) {
+      try { currentAudio.onended = null; currentAudio.onerror = null; currentAudio.pause(); } catch (e) {}
+    }
+    if (currentAudioUrl) { try { URL.revokeObjectURL(currentAudioUrl); } catch (e) {} currentAudioUrl = null; }
+    currentAudio = null;
+    resetPlayButtons();
+    // Mic is already open — attach a fresh recorder and listen immediately.
+    captureAction = 'send';
+    noSpeechTimeout = false;
+    attachRecorder();
+    setState(STATE.LISTENING);
+    statusMain.textContent = 'Listening — speak now';
+    startWaveform();
+    startVadLoop('capture');
+  } else if (ev === 'barge-release') {
+    if (currentAudio) { currentAudio.play().catch(() => {}); }
+    statusMain.textContent = 'Playing dubbed reply…';
+  }
+}
 
 /* ── Hero → App cinematic scene transition ─────────────── */
 let _revealApp = null; // set by reveal setup below
@@ -977,7 +1163,7 @@ function setLang(lang) {
 /* ── Mic button ────────────────────────────────────────── */
 function toggleMic() {
   if (state === STATE.IDLE) startRecording();
-  else if (state === STATE.RECORDING) stopRecording();
+  else if (state === STATE.LISTENING || state === STATE.RECORDING) stopRecording();
   else if (state === STATE.SPEAKING) bargeIn();
 }
 
@@ -996,54 +1182,86 @@ function bargeIn() {
   startRecording();
 }
 
-/* ── Start recording ───────────────────────────────────── */
+/* ── Microphone lifecycle (opened once per exchange, reused for barge-in) ── */
+async function openMic() {
+  if (micStream) return;
+  const stream = await navigator.mediaDevices.getUserMedia({audio:{
+    channelCount:1, sampleRate:16000,
+    echoCancellation:true, noiseSuppression:true
+  }});
+  micStream = stream;
+
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 128;
+  analyser.smoothingTimeConstant = 0.75;
+  sourceNode = audioCtx.createMediaStreamSource(stream);
+  sourceNode.connect(analyser);
+
+  micMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+}
+
+function releaseMic() {
+  stopVadLoop();
+  stopWaveform();
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    try { mediaRecorder.onstop = null; mediaRecorder.stop(); } catch (e) {}
+  }
+  mediaRecorder = null;
+  cleanupStream(micStream);
+  cleanupAudio();
+  micStream = null;
+  micMimeType = null;
+}
+
+function attachRecorder() {
+  mediaRecorder = new MediaRecorder(micStream, {mimeType: micMimeType});
+  audioChunks = [];
+  mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
+  mediaRecorder.onerror = () => {
+    releaseMic();
+    setState(STATE.IDLE);
+    showError('Recording failed. Please try again.');
+  };
+  mediaRecorder.onstop = () => {
+    stopVadLoop();
+    stopTimer();
+    if (captureAction === 'discard' || audioChunks.length === 0) {
+      const timedOut = noSpeechTimeout;
+      captureAction = 'send'; noSpeechTimeout = false;
+      releaseMic();
+      setState(STATE.IDLE);
+      statusMain.textContent = timedOut
+        ? 'No speech detected — tap to try again'
+        : 'No audio captured. Tap mic to try again.';
+      return;
+    }
+    captureAction = 'send'; noSpeechTimeout = false;
+    buildAndSend();
+  };
+  mediaRecorder.start();
+}
+
+/* ── Start capture: VAD auto-sends; tap-to-stop preserved as fallback ── */
 async function startRecording() {
   hideError();
   setState(STATE.PROCESSING);
   statusMain.textContent = 'Requesting microphone…';
 
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio:{
-      channelCount:1, sampleRate:16000,
-      echoCancellation:true, noiseSuppression:true
-    }});
-
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = audioCtx.createAnalyser();
-    analyser.fftSize = 128;
-    analyser.smoothingTimeConstant = 0.75;
-    sourceNode = audioCtx.createMediaStreamSource(stream);
-    sourceNode.connect(analyser);
-
-    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-      ? 'audio/webm;codecs=opus'
-      : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
-
-    mediaRecorder = new MediaRecorder(stream, {mimeType});
-    audioChunks = [];
-    mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onerror = () => {
-      cleanupStream(stream);
-      cleanupAudio();
-      setState(STATE.IDLE);
-      showError('Recording failed. Please try again.');
-    };
-    mediaRecorder.onstop = () => {
-      cleanupStream(stream);
-      cleanupAudio();
-      if (audioChunks.length === 0) {
-        setState(STATE.IDLE);
-        statusMain.textContent = 'No audio captured. Tap mic to try again.';
-        return;
-      }
-      buildAndSend();
-    };
-
-    mediaRecorder.start();
-    setState(STATE.RECORDING);
-    startTimer();
+    await openMic();
+    if (mediaRecorder && mediaRecorder.state === 'recording') return;
+    captureAction = 'send';
+    noSpeechTimeout = false;
+    attachRecorder();
+    setState(STATE.LISTENING);
+    statusMain.textContent = 'Listening — speak now';
     startWaveform();
+    startVadLoop('capture');
   } catch (err) {
+    releaseMic();
     setState(STATE.IDLE);
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
       showError('Microphone access denied. Allow microphone permissions in browser settings.');
@@ -1055,12 +1273,14 @@ async function startRecording() {
   }
 }
 
-/* ── Stop recording ────────────────────────────────────── */
+function stopCapture() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
+}
+
+/* ── Stop recording (manual tap): stop early and send — DUB1 semantics ── */
 function stopRecording() {
-  if (mediaRecorder && mediaRecorder.state === 'recording') {
-    mediaRecorder.stop();
-    stopTimer();
-  }
+  stopVadLoop();
+  stopCapture();
 }
 
 /* ── Timer ─────────────────────────────────────────────── */
@@ -1086,6 +1306,7 @@ function stopTimer() {
 
 /* ── Waveform canvas ───────────────────────────────────── */
 function startWaveform() {
+  if (waveAnimId) return;               // already animating — do not double-loop
   if (!canvas || !analyser) return;
   const dpr = window.devicePixelRatio || 1;
   const W = micBtn.offsetWidth;
@@ -1204,6 +1425,7 @@ function displayTurn(data) {
     '<div class="msg-body">' +
       '<div class="msg-meta"><span class="msg-role">Dubbed &middot; ' + langLabel + '</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
       '<div class="msg-text">' + escapeHtml(data.response_text) +
+        (hudLine(data) ? '<div style="margin-top:5px;font-size:10.5px;opacity:.55;letter-spacing:.03em;font-variant-numeric:tabular-nums;">' + hudLine(data) + '</div>' : '') +
         '<br><button class="play-again" data-audio-idx="' + audioIdx + '" onclick="playAudioByIndex(' + audioIdx + ',this)">' +
           '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again' +
         '</button>' +
@@ -1269,9 +1491,13 @@ function playAudio(base64Audio, btn) {
     paintPlayButton(btn, 'idle');
   };
 
-  audio.onended = cleanup;
-  audio.onerror = () => { cleanup(); showError('Failed to play audio response.'); };
-  audio.play().catch(err => {
+  audio.onended = () => { cleanup(); releaseMic(); };
+  audio.onerror = () => { cleanup(); releaseMic(); showError('Failed to play audio response.'); };
+  audio.play().then(() => {
+    // DUB4: voice barge-in is live while the dub plays. The mic is already
+    // open (reused from capture), so onset detection starts instantly.
+    if (state === STATE.SPEAKING && micStream) startVadLoop('barge');
+  }).catch(err => {
     cleanup();
     if (err && err.name === 'NotAllowedError') {
       // Autoplay blocked by the browser: point at the inline Play control
@@ -1279,6 +1505,7 @@ function playAudio(base64Audio, btn) {
       paintPlayButton(btn || latestPlayButton(), 'tap');
       statusMain.textContent = 'Tap Play on the dub to listen';
       statusHint.textContent = 'Autoplay blocked — tap Play on the reply';
+      releaseMic();
     } else {
       console.error('Playback failed:', err);
       showError('Failed to play audio response.');
@@ -1306,9 +1533,19 @@ function setState(s) {
 
   switch (s) {
     case STATE.IDLE:
+      stopVadLoop();
       micIcon.innerHTML = ICONS.mic;
       statusMain.textContent = 'Speak English — tap to record';
-      statusHint.textContent = 'Tap once to start · tap again to stop';
+      statusHint.textContent = 'Tap once to start · auto-send on pause · tap to send now';
+      break;
+    case STATE.LISTENING:
+      micBtn.classList.add('recording');
+      micStage.classList.add('active');
+      progressRing.className = 'progress-ring show-red';
+      micIcon.innerHTML = ICONS.mic;
+      statusMain.className = 'status-main red';
+      statusMain.textContent = 'Listening — speak now';
+      statusHint.textContent = 'Pause ~1 s to send · or tap to stop';
       break;
     case STATE.RECORDING:
       micBtn.classList.add('recording');
@@ -1320,6 +1557,8 @@ function setState(s) {
       statusHint.textContent = 'Tap to stop recording';
       break;
     case STATE.PROCESSING:
+      stopVadLoop();
+      stopWaveform();
       micBtn.classList.add('processing');
       micBtn.disabled = true;
       progressRing.className = 'progress-ring show-blue';
@@ -1350,6 +1589,8 @@ function setState(s) {
 
 /* ── Error helpers ─────────────────────────────────────── */
 function showError(msg) {
+  stopVadLoop();
+  releaseMic();
   errorMsg.textContent = msg;
   errorCard.classList.add('show');
   setState(STATE.ERROR);
@@ -1357,7 +1598,7 @@ function showError(msg) {
 function hideError() {
   errorCard.classList.remove('show');
   errorMsg.textContent = '';
-  if (state === STATE.ERROR) setState(STATE.IDLE);
+  if (state === STATE.ERROR) { releaseMic(); setState(STATE.IDLE); }
 }
 
 /* ── Helpers ───────────────────────────────────────────── */
