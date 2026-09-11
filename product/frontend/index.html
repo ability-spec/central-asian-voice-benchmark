@@ -1291,6 +1291,9 @@ async function openMic() {
 }
 
 function releaseMic() {
+  stopTimer();  // DUB4FIX: kill the clock BEFORE the recorder teardown that
+                // nulls onstop — otherwise stopTimer() is skipped and the
+                // interval ticks zombie-style forever (shared counter leak).
   stopVadLoop();
   stopWaveform();
   if (mediaRecorder && mediaRecorder.state === 'recording') {
@@ -1304,6 +1307,18 @@ function releaseMic() {
 }
 
 function attachRecorder() {
+  // DUB4FIX: never leave two live MediaRecorders against one global session.
+  // If a previous recorder is still recording (re-arm/replace race), detach
+  // ALL its handlers first so late dataavailable/onstop cannot inject chunks
+  // or trigger a phantom send for the new session.
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    try {
+      mediaRecorder.ondataavailable = null;
+      mediaRecorder.onstop = null;
+      mediaRecorder.onerror = null;
+      mediaRecorder.stop();
+    } catch (e) {}
+  }
   mediaRecorder = new MediaRecorder(micStream, {mimeType: micMimeType});
   audioChunks = [];
   mediaRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
@@ -1376,6 +1391,10 @@ function stopRecording() {
 
 /* ── Timer ─────────────────────────────────────────────── */
 function startTimer() {
+  // DUB4FIX: exactly ONE 30 s clock may ever be live. The handle used to be
+  // overwritten without clearing — leaked intervals stacked across
+  // continuous re-arms and reached the cap at 30/N seconds.
+  if (recordingTimer) { clearInterval(recordingTimer); recordingTimer = null; }
   recordingSeconds = 0;
   statusTimer.textContent = '0:00';
   statusTimer.classList.add('show');
@@ -1445,16 +1464,54 @@ function cleanupAudio() {
 }
 
 /* ── Build request and send ────────────────────────────── */
-function buildAndSend() {
+async function isCaptureValid(blob) {
+  // DUB4FIX: client-side sanity gate. A recorder stopped before its first
+  // media packet yields a tiny or zero-padded header-only WebM — ffmpeg then
+  // fails at pos 36 (0x00 EBML number). Such a capture is a LOCAL no-speech
+  // result, never an API request. Conservative: real speech is KB-sized.
+  if (!blob || blob.size < 1000) return false;                   // empty/header-only
+  if (!blob.type || !blob.type.includes('webm')) return true;    // mp4 etc: size gate only
+  try {
+    const head = new Uint8Array(await blob.slice(0, 256).arrayBuffer());
+    if (!(head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3))
+      return false;                                              // no EBML header
+    let i = 4;
+    const lead = head[i];
+    if (!lead || !(lead & 0x80)) return false;                    // invalid size vint
+    let nb = 1, mask = 0x80;
+    while (nb < 8 && !(lead & mask)) { nb++; mask >>= 1; }
+    let hsize = lead & (mask - 1);
+    i++;
+    for (let k = 1; k < nb; k++) hsize = hsize * 256 + head[i++];
+    i += hsize;                                                   // end of EBML payload
+    if (i + 5 > head.length) return true;                         // beyond window: allow
+    if (!(head[i] === 0x18 && head[i+1] === 0x53 &&
+          head[i+2] === 0x80 && head[i+3] === 0x67)) return false; // Segment ID
+    return head[i+4] !== 0x00;   // Segment size VINT present (0x00 = zero-padded stub)
+  } catch (e) {
+    return true;  // unreadable blob: don't block a potentially valid send
+  }
+}
+
+async function buildAndSend() {
   if (processingInFlight) {
     // DUB4: never overlap /api/turn requests; this utterance is dropped
     // explicitly rather than queued silently (demo-predictable behavior).
     statusMain.textContent = 'Still processing — finish current dub first';
     return;
   }
+  const blob = new Blob(audioChunks, {type: mediaRecorder.mimeType});
+  if (!(await isCaptureValid(blob))) {
+    // DUB4FIX: invalid capture — end the loop quietly with a clear local
+    // message instead of burning a request on garbage (backend stays 422-free).
+    releaseMic();
+    setState(STATE.IDLE);
+    statusMain.textContent = 'Capture was too small to use — tap to try again';
+    statusHint.textContent = 'Say a full sentence (~1 s) and try again';
+    return;
+  }
   setState(STATE.PROCESSING);
   statusMain.textContent = 'Sending…';
-  const blob = new Blob(audioChunks, {type: mediaRecorder.mimeType});
   const formData = new FormData();
   formData.append('audio', blob, 'recording.' + (blob.type.includes('webm') ? 'webm' : 'mp4'));
   formData.append('conversation_id', conversationId);
