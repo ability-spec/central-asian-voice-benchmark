@@ -696,6 +696,35 @@ body{
 /* VC1: voice provider chips reuse .lang-btn; only the disabled state is new */
 .lang-btn:disabled{opacity:.35;cursor:not-allowed}
 .lang-btn:disabled:hover{color:var(--text-dim);background:transparent}
+
+/* ══ CP3: turn result card ═════════════════════════════════ */
+.result-card{
+  margin-top:8px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,0.02);
+  border-radius:var(--r-sm);
+}
+.rc-head{
+  display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 10px;border-bottom:1px solid var(--border);
+}
+.rc-title{font-size:0.6rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text-faint)}
+.rc-badge{
+  font-size:0.6rem;font-weight:600;letter-spacing:0.03em;
+  padding:2px 8px;border-radius:20px;white-space:nowrap;
+  color:var(--text-dim);border:1px solid var(--border);
+}
+.rc-badge.ok{color:var(--sage);border-color:rgba(74,175,130,0.45);background:rgba(74,175,130,0.08)}
+.rc-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px;padding:7px}
+.rc-tile{background:rgba(255,255,255,0.025);border:1px solid var(--border);border-radius:6px;padding:5px 8px 6px;min-width:0}
+.rc-k{font-size:0.56rem;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:var(--text-dim);margin-bottom:1px}
+.rc-v{font-size:0.92rem;font-weight:600;font-variant-numeric:tabular-nums;color:var(--text);line-height:1.2}
+.rc-v.dim{color:var(--text-dim);font-weight:400}
+.rc-v.hi{color:var(--sage)}
+.rc-u{font-size:0.62rem;font-weight:500;color:var(--text-dim);margin-left:1px}
+@media (max-width:480px){
+  .rc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
 </style>
 </head>
 <body>
@@ -1065,6 +1094,55 @@ function nextPhaseAfterTurn(continuous) {
   return continuous ? 'listen' : 'idle';
 }
 /* == DUB4-CORE-END == */
+
+/* == RESULT-CARD-CORE-START == */
+/* CP3: pure renderer for the turn result card. Input is the metrics object
+   that /api/turn/stream's 'done' event (and /api/turn's JSON) already
+   carries: {wer, cer, scored, stt_ms, llm_ms, tts_ms, total_ms}. Returns an
+   HTML string ('' when nothing renderable). DOM-free so tests extract it
+   verbatim; reuses fmtMs from the VAD-CORE block. Every value is
+   number-sanitised and only static labels enter the markup, so there is no
+   escaping surface. Missing/null fields render as an em dash, never as
+   NaN/undefined; WER/CER tiles show values only when scored === true. */
+function resultCardHtml(data) {
+  if (!data) return '';
+  var num = function (v) { var n = Number(v); return isFinite(n) ? n : null; };
+  var ratePct = function (v) {
+    var n = num(v);
+    return n === null ? null : Math.round(n * 1000) / 10;
+  };
+  var werPct = ratePct(data.wer), cerPct = ratePct(data.cer);
+  var scored = data.scored === true;
+  var ms = {stt: num(data.stt_ms), llm: num(data.llm_ms),
+            tts: num(data.tts_ms), total: num(data.total_ms)};
+  var hasLatency = (ms.stt !== null && ms.stt > 0) || (ms.llm !== null && ms.llm > 0) ||
+                   (ms.tts !== null && ms.tts > 0) || (ms.total !== null && ms.total > 0);
+  if (!scored && !hasLatency) return '';
+  var tile = function (k, vHtml, extra) {
+    var cls = (vHtml === '\u2014' ? 'dim' : '') + (extra ? ' ' + extra : '');
+    return '<div class="rc-tile"><div class="rc-k">' + k + '</div>' +
+           '<div class="rc-v' + (cls ? ' ' + cls : '') + '">' + vHtml + '</div></div>';
+  };
+  var rateVal = function (pct, active) {
+    return (active && pct !== null) ? pct.toFixed(1) + '<span class="rc-u">%</span>' : '\u2014';
+  };
+  var msVal = function (v) { return (v === null || v <= 0) ? '\u2014' : fmtMs(v); };
+  var badge = scored
+    ? '<span class="rc-badge ok">\u2713 Scored vs reference</span>'
+    : '<span class="rc-badge">Unscored &middot; no reference text</span>';
+  return '<div class="result-card">' +
+           '<div class="rc-head"><span class="rc-title">Turn result</span>' + badge + '</div>' +
+           '<div class="rc-grid">' +
+             tile('WER', rateVal(werPct, scored), '') +
+             tile('CER', rateVal(cerPct, scored), '') +
+             tile('STT', msVal(ms.stt), '') +
+             tile('AI', msVal(ms.llm), '') +
+             tile('TTS', msVal(ms.tts), '') +
+             tile('\u03a3 total', msVal(ms.total), 'hi') +
+           '</div>' +
+         '</div>';
+}
+/* == RESULT-CARD-CORE-END == */
 
 /* ── VAD runtime (DOM side; core logic above stays pure) ── */
 let micStream = null;        // live getUserMedia stream, reused across barge-in
@@ -1718,7 +1796,7 @@ function displayTurn(data) {
     '<div class="msg-body">' +
       '<div class="msg-meta"><span class="msg-role">Dubbed &middot; ' + langLabel + '</span><span class="msg-turn">#' + data.turn_number + '</span></div>' +
       '<div class="msg-text">' + escapeHtml(data.response_text) +
-        (hudLine(data) ? '<div style="margin-top:5px;font-size:10.5px;opacity:.55;letter-spacing:.03em;font-variant-numeric:tabular-nums;">' + hudLine(data) + '</div>' : '') +
+        resultCardHtml(data) +
         '<br><button class="play-again" data-audio-idx="' + audioIdx + '" onclick="playAudioByIndex(' + audioIdx + ',this)">' +
           '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again' +
         '</button>' +
