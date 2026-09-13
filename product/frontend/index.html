@@ -693,6 +693,9 @@ body{
   .chat-inner{max-height:320px}
   .app-section{padding:52px 16px 72px}
 }
+/* VC1: voice provider chips reuse .lang-btn; only the disabled state is new */
+.lang-btn:disabled{opacity:.35;cursor:not-allowed}
+.lang-btn:disabled:hover{color:var(--text-dim);background:transparent}
 </style>
 </head>
 <body>
@@ -788,6 +791,21 @@ body{
         <span class="lang-en">Kazakh</span>
       </button>
     </div>
+
+    <!-- VC1: voice provider selector -->
+    <div class="app-reveal" aria-hidden="true"
+         style="text-align:center;margin:14px 0 -8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;opacity:.55;">Voice:</div>
+    <div class="lang-row app-reveal" role="group" aria-label="Voice provider">
+      <button class="lang-btn active" id="voiceBtnOpenai" data-voice="openai" onclick="setVoiceProvider('openai')">
+        <span class="lang-native">Standard</span>
+        <span class="lang-en">OpenAI voice</span>
+      </button>
+      <button class="lang-btn" id="voiceBtnEleven" data-voice="elevenlabs" onclick="setVoiceProvider('elevenlabs')">
+        <span class="lang-native">My voice</span>
+        <span class="lang-en">ElevenLabs</span>
+      </button>
+    </div>
+    <div class="app-reveal" id="voiceStatus" style="text-align:center;font-size:11px;color:var(--text-dim);margin:8px 0 2px;min-height:14px;">Voice service&hellip;</div>
 
     <!-- Mic stage -->
     <div class="mic-stage app-reveal" id="micStage">
@@ -1242,6 +1260,56 @@ function setLang(lang) {
     statusMain.textContent = lang === 'uz' ? "Speak English → O'zbekcha" : 'Speak English → Қазақша';
   }
 }
+
+/* ── Voice provider (VC1) ───────────────────────────────── */
+async function refreshVoiceStatus() {
+  const el = document.getElementById('voiceStatus');
+  try {
+    const res = await fetch(API_BASE + '/api/voice/status');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const st = await res.json();
+    const openaiBtn = document.getElementById('voiceBtnOpenai');
+    const elBtn = document.getElementById('voiceBtnEleven');
+    if (openaiBtn && elBtn) {
+      const active = st.resolved_provider || 'openai';
+      openaiBtn.classList.toggle('active', active === 'openai');
+      elBtn.classList.toggle('active', active === 'elevenlabs');
+      const usable = st.elevenlabs && st.elevenlabs.configured;
+      elBtn.disabled = !usable;
+      elBtn.title = usable ? 'Speak with my enrolled ElevenLabs voice'
+                           : 'Not configured — set ELEVENLABS_API_KEY and enroll a voice';
+    }
+    if (el) {
+      const cfg = st.elevenlabs || {};
+      el.textContent = !cfg.configured
+        ? 'Voice cloning not configured — using the standard voice'
+        : (st.resolved_provider === 'elevenlabs'
+            ? 'My cloned voice (' + (cfg.model || 'elevenlabs') + ')'
+            : 'My cloned voice is ready — switch above');
+    }
+  } catch (e) {
+    if (el) el.textContent = 'Voice service unavailable';
+  }
+}
+async function setVoiceProvider(provider) {
+  const el = document.getElementById('voiceStatus');
+  try {
+    const res = await fetch(API_BASE + '/api/voice/provider', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({provider: provider})
+    });
+    if (!res.ok) {
+      let d = 'HTTP ' + res.status;
+      try { const j = await res.json(); if (j && j.detail) d = j.detail; } catch (e) {}
+      throw new Error(d);
+    }
+  } catch (err) {
+    if (el) el.textContent = 'Voice switch failed: ' + err.message;
+  }
+  refreshVoiceStatus();   // re-render chips from server truth either way
+}
+refreshVoiceStatus();
 
 /* ── Mic button ────────────────────────────────────────── */
 function toggleMic() {

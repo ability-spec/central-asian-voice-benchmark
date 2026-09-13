@@ -29,6 +29,7 @@ from product.backend.config import settings
 from product.backend.models import TurnRequest, TurnResponse
 from product.backend.services.stt import transcribe
 from product.backend.services.llm import respond, translate, translate_multi, split_sentences
+from product.backend.services import voice_clone
 from product.backend.services.tts import synthesize_b64, concat_wav_b64
 from product.backend.services.score import score as score_transcript
 from product.backend.services.session import session_manager
@@ -276,7 +277,7 @@ async def handle_turn(
         provider_info={
             "stt": f"{settings.stt_provider}/{settings.stt_model}",
             "llm": f"{settings.llm_provider}/{settings.llm_model}",
-            "tts": f"{settings.tts_provider}/{settings.tts_model}",
+            "tts": voice_clone.tts_label(),
             "mock_mode": settings.mock_mode,
             # DUB1 observability: which flow produced this turn.
             "mode": "dub" if is_dub else "chat",
@@ -505,7 +506,7 @@ async def handle_turn_stream(
             provider = {
                 "stt": f"{settings.stt_provider}/{settings.stt_model}",
                 "llm": f"{settings.llm_provider}/{settings.llm_model}",
-                "tts": f"{settings.tts_provider}/{settings.tts_model}",
+                "tts": voice_clone.tts_label(),
                 "mock_mode": settings.mock_mode,
                 "mode": "dub" if is_dub else "chat",
                 "source_language": stt_lang,

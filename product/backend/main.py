@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from product.backend.config import settings
-from product.backend.routers import health, turn, data
+from product.backend.routers import health, turn, data, voice
 
 # --- Logging ---
 # Reconfigure stdout to UTF-8 so Cyrillic/Unicode in log messages doesn't
@@ -65,6 +65,7 @@ app.add_middleware(
 app.include_router(health.router)
 app.include_router(turn.router)
 app.include_router(data.router)
+app.include_router(voice.router)
 
 # --- Static frontend ---
 frontend_dir = Path(__file__).resolve().parent.parent / "frontend"

@@ -21,6 +21,24 @@ class Settings:
     elevenlabs_api_key: str = field(
         default_factory=lambda: os.environ.get("ELEVENLABS_API_KEY", "")
     )
+    elevenlabs_voice_id: str = field(
+        default_factory=lambda: os.environ.get("ELEVENLABS_VOICE_ID", "")
+    )
+    elevenlabs_tts_model: str = field(
+        default_factory=lambda: os.environ.get(
+            "ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2"
+        )
+    )
+    # VC1: enrolled voice config is stored OUTSIDE the repository by design
+    # (never commit voice ids/secrets). Default: ~/.birovoz_voice.json
+    voice_config_path: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get(
+                "BIROVOZ_VOICE_CONFIG",
+                str(Path.home() / ".birovoz_voice.json"),
+            )
+        )
+    )
 
     # Server
     host: str = field(default_factory=lambda: os.environ.get("HOST", "0.0.0.0"))

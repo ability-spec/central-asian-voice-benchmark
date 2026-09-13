@@ -15,6 +15,7 @@ from typing import Optional
 from openai import OpenAI, APIError
 
 from product.backend.config import settings
+from product.backend.services import voice_clone
 
 logger = logging.getLogger(__name__)
 
@@ -76,26 +77,48 @@ def _openai_synthesize(text: str, language: str) -> bytes:
 
 # ---------- Public API ----------
 
-def synthesize(text: str, language: str) -> bytes:
+def synthesize(text: str, language: str, report: Optional[dict] = None) -> bytes:
     """Convert text to speech audio bytes.
+
+    VC1: dispatches through the ACTIVE voice provider — OpenAI by default,
+    ElevenLabs when selected (env TTS_PROVIDER=elevenlabs, or switched at
+    runtime via /api/voice/provider) AND fully configured. If ElevenLabs
+    fails at runtime, falls back to the pre-VC1 OpenAI path (mock in mock
+    mode) so the pipeline never hard-fails.
 
     Args:
         text: Text to speak.
-        language: ISO code ('uz' or 'kk') — currently used for voice selection
-                 (OpenAI voices are multilingual).
+        language: ISO code ('uz' or 'kk') — used for voice selection where
+                 the provider is multilingual.
+        report: Optional dict filled with the provider/model ACTUALLY used,
+                so provider_info stays truthful across fallbacks.
 
     Returns:
         Raw WAV audio bytes.
     """
+    if voice_clone.resolved_provider() == "elevenlabs":
+        try:
+            data = voice_clone.synthesize_elevenlabs(text, language)
+            if report is not None:
+                report.update(provider="elevenlabs",
+                              model=voice_clone.active_model_name())
+            return data
+        except Exception as e:
+            logger.warning("ElevenLabs TTS failed (%s) — falling back to OpenAI", e)
+
     if settings.mock_mode:
+        if report is not None:
+            report.update(provider="openai", model=settings.tts_model)
         return _mock_synthesize(text, language)
 
+    if report is not None:
+        report.update(provider="openai", model=settings.tts_model)
     return _openai_synthesize(text, language)
 
 
-def synthesize_b64(text: str, language: str) -> str:
+def synthesize_b64(text: str, language: str, report: Optional[dict] = None) -> str:
     """Convert text to speech and return base64-encoded WAV."""
-    audio_bytes = synthesize(text, language)
+    audio_bytes = synthesize(text, language, report=report)
     return base64.b64encode(audio_bytes).decode("ascii")
 
 
