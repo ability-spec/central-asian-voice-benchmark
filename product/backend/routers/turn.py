@@ -30,7 +30,9 @@ from product.backend.models import TurnRequest, TurnResponse
 from product.backend.services.stt import transcribe
 from product.backend.services.llm import respond, translate, translate_multi, split_sentences
 from product.backend.services import voice_clone
-from product.backend.services.tts import synthesize_b64, concat_wav_b64
+from product.backend.services.tts import (
+    synthesize_b64, concat_wav_b64, take_last_report, _merge_part_reports,
+)
 from product.backend.services.score import score as score_transcript
 from product.backend.services.session import session_manager
 from product.backend.services.log_jsonl import log_turn
@@ -230,26 +232,39 @@ async def handle_turn(
 
     # --- 8. TTS (DUB3: dub parts are synthesized concurrently in the
     #     default executor — same thread-pool pattern as _to_wav — so the
-    #     wall time is ~ the longest sentence, not the sum of all of them) ---
+    #     wall time is ~ the longest sentence, not the sum of all of them).
+    #     Each part's provider report is captured from thread-local storage
+    #     immediately after synthesize_b64 returns so that provider_info
+    #     stays truthful across per-part fallbacks (e.g. one sentence
+    #     hitting an OpenAI fallback is honestly reported as openai).
+    #     Legacy 2-arg synthesize_b64(text, lang) seam preserved. ---
     t0 = time.time()
     audio_parts: list = []
+    tts_report: dict = {}
     try:
         if is_dub and len(dub_parts) > 1:
             loop = asyncio.get_running_loop()
+            part_reports: list = [dict() for _ in dub_parts]
+
+            def _synth_part(idx: int, text_part: str):
+                audio = synthesize_b64(text_part, language)
+                part_reports[idx] = take_last_report()
+                return audio
+
             audio_parts = list(
                 await asyncio.gather(
                     *(
-                        loop.run_in_executor(
-                            None, synthesize_b64, part, language
-                        )
-                        for part in dub_parts
+                        loop.run_in_executor(None, _synth_part, i, part)
+                        for i, part in enumerate(dub_parts)
                     )
                 )
             )
+            tts_report = _merge_part_reports(part_reports)
             # Backward-compatible single-audio field: the full concatenated dub.
             audio_b64 = concat_wav_b64(audio_parts)
         else:
             audio_b64 = synthesize_b64(response_text, language)
+            tts_report = take_last_report()
     except Exception as e:
         logger.error("[%s] TTS failed: %s", request_id, str(e))
         raise HTTPException(status_code=502, detail="Audio synthesis failed. Please try again.")
@@ -277,7 +292,7 @@ async def handle_turn(
         provider_info={
             "stt": f"{settings.stt_provider}/{settings.stt_model}",
             "llm": f"{settings.llm_provider}/{settings.llm_model}",
-            "tts": voice_clone.tts_label(),
+            "tts": voice_clone.tts_label(tts_report or None),
             "mock_mode": settings.mock_mode,
             # DUB1 observability: which flow produced this turn.
             "mode": "dub" if is_dub else "chat",
@@ -451,18 +466,26 @@ async def handle_turn_stream(
                            "source_language": stt_lang, "stt_ms": stt_ms})
 
             texts, parts_b64, tr_ms, ts_ms = [], [], 0, 0
+            tts_report: dict = {}
             t1 = time.time()
             if is_dub:
                 sents = split_sentences(transcript) or [transcript]
+                per_part_reports: list = [dict() for _ in sents]
+                _part_idx = {"i": 0}
+                _part_lock = threading.Lock()
 
                 def _job(sent):
+                    with _part_lock:
+                        idx = _part_idx["i"]; _part_idx["i"] += 1
                     a = time.time()
                     txt = translate(sent, stt_lang, language)
                     b = time.time()
                     wav_b64 = synthesize_b64(txt, language)
+                    per_part_reports[idx] = take_last_report()
                     c = time.time()
                     return {"text": txt, "audio": wav_b64,
-                            "tr_ms": round((b - a) * 1000), "ts_ms": round((c - b) * 1000)}
+                            "tr_ms": round((b - a) * 1000),
+                            "ts_ms": round((c - b) * 1000)}
 
                 runner = DubJobRunner(sents, _job, max_workers=4)
                 try:
@@ -481,11 +504,10 @@ async def handle_turn_stream(
                                        "at_ms": round((time.time() - t_all) * 1000)})
                 finally:
                     if runner is not None:
-                        # Normal end: nothing left to cancel. Client gone /
-                        # failure mid-stream: drop every not-yet-started job.
                         runner.cancel_pending()
                         runner.shutdown()
                         runner = None
+                tts_report = _merge_part_reports(per_part_reports)
                 response_text = " ".join(texts)
                 session_manager.add_turn(conversation_id, "user", transcript)
                 session_manager.add_turn(conversation_id, "assistant", response_text)
@@ -493,6 +515,7 @@ async def handle_turn_stream(
             else:
                 reply = await loop.run_in_executor(None, respond, conversation_id, transcript, language)
                 audio_b64 = await loop.run_in_executor(None, synthesize_b64, reply, language)
+                tts_report = take_last_report()
                 response_text, texts, parts_b64 = reply, [reply], [audio_b64]
                 yield _ndjson({"type": "part", "index": 0, "text": reply,
                                "audio": audio_b64,
@@ -506,7 +529,7 @@ async def handle_turn_stream(
             provider = {
                 "stt": f"{settings.stt_provider}/{settings.stt_model}",
                 "llm": f"{settings.llm_provider}/{settings.llm_model}",
-                "tts": voice_clone.tts_label(),
+                "tts": voice_clone.tts_label(tts_report or None),
                 "mock_mode": settings.mock_mode,
                 "mode": "dub" if is_dub else "chat",
                 "source_language": stt_lang,

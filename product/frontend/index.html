@@ -829,9 +829,14 @@ body{
         <span class="lang-native">Standard</span>
         <span class="lang-en">OpenAI voice</span>
       </button>
-      <button class="lang-btn" id="voiceBtnEleven" data-voice="elevenlabs" onclick="setVoiceProvider('elevenlabs')">
+      <!-- CP5: "My voice" routes to local-clone (Sayro + Seed-VC) when configured,
+           else falls through to ElevenLabs if that is configured. The button
+           id stays voiceBtnEleven for backward compat with existing JS; the
+           provider actually switched to is decided by refreshVoiceStatus()
+           using server truth. -->
+      <button class="lang-btn" id="voiceBtnEleven" data-voice="local-clone" onclick="setVoiceProvider('local-clone')">
         <span class="lang-native">My voice</span>
-        <span class="lang-en">ElevenLabs</span>
+        <span class="lang-en" id="voiceBtnMyVoiceSub">Local clone</span>
       </button>
     </div>
     <div class="app-reveal" id="voiceStatus" style="text-align:center;font-size:11px;color:var(--text-dim);margin:8px 0 2px;min-height:14px;">Voice service&hellip;</div>
@@ -1339,7 +1344,42 @@ function setLang(lang) {
   }
 }
 
-/* ── Voice provider (VC1) ───────────────────────────────── */
+/* ── Voice provider (VC1 + CP5 local clone) ─────────────── */
+function _selectMyVoiceProvider(st) {
+  // CP5: "My voice" chip prefers local-clone (Sayro + Seed-VC) when that is
+  // configured, else falls back to ElevenLabs if it is configured. Returns
+  // {provider, label, title, statusLine} for rendering.
+  var lc = st.local_clone || {};
+  var el = st.elevenlabs || {};
+  if (lc.configured) {
+    return {
+      provider: 'local-clone',
+      label: 'Sayro + Seed-VC',
+      title: 'Speak in my cloned voice (local Sayro + Seed-VC)',
+      activeLine: 'My cloned voice (' + (lc.model || 'sayro-seedvc') + ')',
+      readyLine: 'My cloned voice is ready — switch above',
+      unconfiguredLine: 'Local clone not configured — using the standard voice',
+    };
+  }
+  if (el.configured) {
+    return {
+      provider: 'elevenlabs',
+      label: 'ElevenLabs',
+      title: 'Speak with my enrolled ElevenLabs voice',
+      activeLine: 'My cloned voice (' + (el.model || 'elevenlabs') + ')',
+      readyLine: 'My cloned voice is ready — switch above',
+      unconfiguredLine: 'Voice cloning not configured — using the standard voice',
+    };
+  }
+  return {
+    provider: null,
+    label: 'Not configured',
+    title: 'Not configured — set up local clone (Sayro + Seed-VC) or ElevenLabs',
+    activeLine: '',
+    readyLine: '',
+    unconfiguredLine: 'Voice cloning not configured — using the standard voice',
+  };
+}
 async function refreshVoiceStatus() {
   const el = document.getElementById('voiceStatus');
   try {
@@ -1347,35 +1387,57 @@ async function refreshVoiceStatus() {
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const st = await res.json();
     const openaiBtn = document.getElementById('voiceBtnOpenai');
-    const elBtn = document.getElementById('voiceBtnEleven');
-    if (openaiBtn && elBtn) {
+    const myBtn = document.getElementById('voiceBtnEleven');
+    const sub = document.getElementById('voiceBtnMyVoiceSub');
+    const sel = _selectMyVoiceProvider(st);
+    if (openaiBtn && myBtn) {
       const active = st.resolved_provider || 'openai';
       openaiBtn.classList.toggle('active', active === 'openai');
-      elBtn.classList.toggle('active', active === 'elevenlabs');
-      const usable = st.elevenlabs && st.elevenlabs.configured;
-      elBtn.disabled = !usable;
-      elBtn.title = usable ? 'Speak with my enrolled ElevenLabs voice'
-                           : 'Not configured — set ELEVENLABS_API_KEY and enroll a voice';
+      var myActive = active === 'local-clone' || active === 'elevenlabs';
+      myBtn.classList.toggle('active', myActive);
+      myBtn.dataset.voice = sel.provider || 'local-clone';
+      myBtn.disabled = !sel.provider;
+      myBtn.title = sel.title;
+      if (sub) sub.textContent = sel.label;
     }
     if (el) {
-      const cfg = st.elevenlabs || {};
-      el.textContent = !cfg.configured
-        ? 'Voice cloning not configured — using the standard voice'
-        : (st.resolved_provider === 'elevenlabs'
-            ? 'My cloned voice (' + (cfg.model || 'elevenlabs') + ')'
-            : 'My cloned voice is ready — switch above');
+      var cfg = (sel.provider === 'local-clone') ? (st.local_clone || {}) : (st.elevenlabs || {});
+      if (!sel.provider) {
+        el.textContent = sel.unconfiguredLine;
+      } else if ((st.resolved_provider === 'local-clone') || (st.resolved_provider === 'elevenlabs')) {
+        el.textContent = sel.activeLine;
+      } else {
+        el.textContent = sel.readyLine;
+      }
     }
   } catch (e) {
     if (el) el.textContent = 'Voice service unavailable';
   }
 }
 async function setVoiceProvider(provider) {
+  // If the chip says 'local-clone' but the server only has ElevenLabs
+  // configured, transparently switch to elevenlabs so the old env path
+  // keeps working when local clone isn't set up.
   const el = document.getElementById('voiceStatus');
+  var targetProvider = provider;
+  try {
+    var preres = await fetch(API_BASE + '/api/voice/status');
+    if (preres.ok) {
+      var prest = await preres.json();
+      var sel = _selectMyVoiceProvider(prest);
+      if (provider === 'local-clone' && !prest.local_clone.configured && prest.elevenlabs.configured) {
+        targetProvider = 'elevenlabs';
+      } else if (provider === 'local-clone' && !sel.provider) {
+        if (el) el.textContent = 'My voice is not configured — see docs';
+        return;
+      }
+    }
+  } catch (e) { /* proceed with requested provider; server will error */ }
   try {
     const res = await fetch(API_BASE + '/api/voice/provider', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({provider: provider})
+      body: JSON.stringify({provider: targetProvider})
     });
     if (!res.ok) {
       let d = 'HTTP ' + res.status;

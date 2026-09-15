@@ -40,6 +40,50 @@ class Settings:
         )
     )
 
+    # CP5: local voice clone invokes the EXISTING Route B wrapper in voice-lab
+    # (b_sayro_then_seedvc.py). No Sayro CLI is invented; no voice-lab or
+    # seed-vc code is copied into the product. All paths live OUTSIDE the
+    # repository; nothing is copied into the product tree. Every value is
+    # env-driven and defaults to empty -> feature gracefully unavailable,
+    # Standard/OpenAI voice remains the fallback.
+    #
+    # Wrapper CLI (as implemented by b_sayro_then_seedvc.py):
+    #   <SAYRO_PYTHON> <SAYRO_SCRIPT> --stage all --sentences <dir> --only 1
+    #     --out <dir> --target <ref.wav> --seedvc-python <py>
+    #     --seedvc-dir <dir> --seedvc-version v1
+    # The wrapper handles Sayro load / Uzbek normalization / model teardown
+    # / Seed-VC subprocess internally with the known-good V1 flags
+    # (diffusion-steps=25, cfg-rate=0.8, f0 off, fp16, cwd=SEEDVC_DIR).
+    sayro_voice_lab_dir: str = field(
+        default_factory=lambda: os.environ.get("SAYRO_VOICE_LAB_DIR", "")
+    )
+    sayro_script: str = field(
+        default_factory=lambda: os.environ.get(
+            "SAYRO_SCRIPT", "b_sayro_then_seedvc.py"
+        )
+    )
+    sayro_python: str = field(
+        default_factory=lambda: os.environ.get("SAYRO_PYTHON", "")
+    )
+    # Seed-VC environment for the wrapper to shell into.
+    seedvc_python: str = field(
+        default_factory=lambda: os.environ.get("SEEDVC_PYTHON", "")
+    )
+    seedvc_dir: str = field(
+        default_factory=lambda: os.environ.get("SEEDVC_DIR", "")
+    )
+    seedvc_reference_wav: str = field(
+        default_factory=lambda: os.environ.get("SEEDVC_REFERENCE_WAV", "")
+    )
+    # Optional extra argv tokens appended verbatim (shlex-split), so any
+    # wrapper flag we don't yet know about is reachable without code changes.
+    route_b_extra_args: str = field(
+        default_factory=lambda: os.environ.get("ROUTE_B_EXTRA_ARGS", "")
+    )
+    local_clone_timeout_s: int = field(
+        default_factory=lambda: int(os.environ.get("LOCAL_CLONE_TIMEOUT_S", "180"))
+    )
+
     # Server
     host: str = field(default_factory=lambda: os.environ.get("HOST", "0.0.0.0"))
     port: int = field(
