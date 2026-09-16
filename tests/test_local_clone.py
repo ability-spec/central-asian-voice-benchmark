@@ -11,6 +11,7 @@ Run: python -m pytest tests/test_local_clone.py -v
 """
 
 import io
+import json
 import os
 import re as _re
 import shutil
@@ -560,3 +561,202 @@ def test_frontend_has_two_chip_ui_and_local_clone_branches():
     assert "'local-clone'" in html
     assert "formData.append('mode', 'dub');" in html
     assert "API_BASE + '/api/turn/stream'" in html
+
+
+# ---------------------------------------------------------------------------
+# B1 regression: _run_subprocess decodes UTF-8 (incl. Cyrillic) safely.
+# ---------------------------------------------------------------------------
+
+def test_run_subprocess_decodes_utf8_cyrillic_stderr(tmp_path):
+    """Regression for B1: on default Windows cp1252, a child writing
+    Uzbek-Cyrillic UTF-8 to stderr must NOT raise UnicodeDecodeError —
+    stderr tail is preserved (with replacement chars for invalid bytes)
+    and surfaced in the RuntimeError message."""
+    script = tmp_path / "cyrillic_err.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stderr.write('Салом дунё — Seed-VC хато: CUDA out of memory\\n')\n"
+        "sys.exit(2)\n",
+        encoding="utf-8",
+    )
+    import sys as _sys
+    with pytest.raises(RuntimeError) as exc:
+        voice_clone._run_subprocess(
+            [_sys.executable, str(script)],
+            timeout=10,
+        )
+    msg = str(exc.value)
+    assert "exit=2" in msg
+    # The Cyrillic MUST be decoded (not raise UnicodeDecodeError before
+    # we can build the error message). With errors="replace", any bytes
+    # that are not valid UTF-8 come through as U+FFFD rather than raising.
+    assert "Салом" in msg or "\ufffd" in msg or "Seed-VC" in msg
+
+
+def test_run_subprocess_nonzero_exit_includes_tail(tmp_path):
+    """Non-zero exit still raises with the tail of stderr/stdout
+    (preserves existing error-reporting behavior)."""
+    script = tmp_path / "fail.py"
+    script.write_text(
+        "import sys\n"
+        "print('line1')\n"
+        "print('line2')\n"
+        "print('line3', file=sys.stderr)\n"
+        "print('line4', file=sys.stderr)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    import sys as _sys
+    with pytest.raises(RuntimeError) as exc:
+        voice_clone._run_subprocess([_sys.executable, str(script)], timeout=10)
+    msg = str(exc.value)
+    assert "exit=3" in msg
+    # tail is last 5 lines of stderr-or-stdout; line4 should be visible
+    assert "line4" in msg
+
+
+# ---------------------------------------------------------------------------
+# B2 regression: _which rejects directories for absolute paths.
+# ---------------------------------------------------------------------------
+
+def test_which_rejects_directory_as_python_executable(tmp_path):
+    """An absolute path that points at a DIRECTORY (e.g. a user typo
+    leaving a trailing backslash) must NOT be accepted as a Python
+    executable — otherwise local_clone_configured() would be True and
+    subprocess.run would fail with an opaque WinError 193."""
+    not_py = tmp_path / "not_python"
+    not_py.mkdir()
+    assert voice_clone._which(str(not_py)) is False
+    # A file that exists is accepted.
+    real_py = tmp_path / "py.exe"
+    real_py.write_bytes(b"#!/usr/bin/env python\n")
+    real_py.chmod(0o755)
+    assert voice_clone._which(str(real_py)) is True
+    # Empty/None rejected.
+    assert voice_clone._which("") is False
+
+
+def test_which_bare_command_found_or_not(tmp_path, monkeypatch):
+    """Bare command lookups still go through shutil.which (unchanged)."""
+    # A bare name that doesn't exist on PATH returns False.
+    assert voice_clone._which("definitely-not-a-real-exe-xyzzy-12345") is False
+
+
+def test_local_clone_unconfigured_when_python_is_directory(voice_env, tmp_path, monkeypatch):
+    """End-to-end: if SAYRO_PYTHON points at a directory, local-clone is
+    reported as unconfigured and set_provider('local-clone') raises."""
+    not_py = tmp_path / "venv_dir"; not_py.mkdir()
+    seed_py = tmp_path / "sp"; seed_py.write_bytes(b"x"); seed_py.chmod(0o755)
+    sd = tmp_path / "svc"; sd.mkdir()
+    lab = tmp_path / "lab"; lab.mkdir()
+    (lab / "b_sayro_then_seedvc.py").write_bytes(b"x")
+    ref = tmp_path / "r.wav"; _write_fake_wav(ref)
+    monkeypatch.setattr(settings, "sayro_python", str(not_py))
+    monkeypatch.setattr(settings, "sayro_voice_lab_dir", str(lab))
+    monkeypatch.setattr(settings, "sayro_script", "b_sayro_then_seedvc.py")
+    monkeypatch.setattr(settings, "seedvc_python", str(seed_py))
+    monkeypatch.setattr(settings, "seedvc_dir", str(sd))
+    monkeypatch.setattr(settings, "seedvc_reference_wav", str(ref))
+    monkeypatch.setattr(voice_clone, "_active_provider", None)
+    assert voice_clone.local_clone_configured() is False
+    with pytest.raises(ValueError, match="not configured"):
+        voice_clone.set_provider("local-clone")
+
+
+# ---------------------------------------------------------------------------
+# A1 regression: /api/turn/stream chat mode truthful provider_info
+# ---------------------------------------------------------------------------
+
+def _stream_chat_with_local_failure(monkeypatch, conv="chat-fb", language="uz"):
+    """POST a chat-mode stream request while local-clone is selected but
+    forced to fail; returns parsed NDJSON events. The final done event's
+    provider_info.tts must report openai (fallback), not local-clone."""
+    # Force local-clone selected but synthesize_local_clone always raises —
+    # matches the scenario in test_turn_provider_info_falls_back_on_local_failure
+    # but via the STREAMING chat path (non-dub, single part).
+    monkeypatch.setattr(voice_clone, "synthesize_local_clone",
+                        lambda t, l: (_ for _ in ()).throw(RuntimeError("gpu oom")))
+    voice_clone.set_provider("local-clone")
+
+    out = []
+    with client.stream(
+        "POST", "/api/turn/stream",
+        files={"audio": ("t.wav", _fake_wav_bytes(), "audio/wav")},
+        data={"conversation_id": conv, "language": language, "mode": "chat"},
+    ) as r:
+        assert r.status_code == 200, r.read()
+        for line in r.iter_lines():
+            if not line.strip():
+                continue
+            out.append(json.loads(line))
+    return out
+
+
+def test_stream_chat_fallback_provider_info_truthful(local_configured, mock_turn_env, monkeypatch):
+    """A1 regression: when local-clone is selected but fails for a
+    chat-mode stream request, the done event's provider_info.tts must
+    report 'openai/...' (what actually synthesized the audio) rather
+    than lying 'local-clone/sayro-seedvc'."""
+    evs = _stream_chat_with_local_failure(monkeypatch, conv="a1-fb")
+    types = [e["type"] for e in evs]
+    assert types == ["meta", "part", "done"], types
+    done = next(e for e in evs if e["type"] == "done")
+    assert done["provider_info"]["mode"] == "chat"
+    # Must NOT claim local-clone — the clone raised and we fell back.
+    assert done["provider_info"]["tts"].startswith("openai/"), (
+        f"expected openai fallback label, got {done['provider_info']['tts']!r}"
+    )
+
+
+def test_stream_chat_happy_path_provider_info_truthful(local_configured, mock_turn_env, monkeypatch):
+    """A1 positive path: when local-clone succeeds in chat-mode stream,
+    provider_info.tts reports local-clone/sayro-seedvc (unchanged)."""
+    monkeypatch.setattr(voice_clone, "synthesize_local_clone",
+                        lambda t, l: _fake_wav_bytes(seconds=0.05, rate=24000))
+    voice_clone.set_provider("local-clone")
+    out = []
+    with client.stream(
+        "POST", "/api/turn/stream",
+        files={"audio": ("t.wav", _fake_wav_bytes(), "audio/wav")},
+        data={"conversation_id": "a1-ok", "language": "uz", "mode": "chat"},
+    ) as r:
+        assert r.status_code == 200, r.read()
+        for line in r.iter_lines():
+            if line.strip():
+                out.append(json.loads(line))
+    done = next(e for e in out if e["type"] == "done")
+    assert done["provider_info"]["tts"] == "local-clone/sayro-seedvc"
+
+
+# ---------------------------------------------------------------------------
+# Existing local-clone -> OpenAI fallback unchanged (legacy /api/turn path).
+# ---------------------------------------------------------------------------
+
+def test_legacy_turn_fallback_still_openai_after_patch(local_configured, mock_turn_env, monkeypatch):
+    """Guard: local-clone failure still falls back to OpenAI on the
+    legacy /api/turn endpoint (unchanged behavior)."""
+    monkeypatch.setattr(voice_clone, "synthesize_local_clone",
+                        lambda t, l: (_ for _ in ()).throw(RuntimeError("gpu oom")))
+    voice_clone.set_provider("local-clone")
+    r = _post_turn("cp5-fb2")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["provider_info"]["tts"] == "openai/tts-1"
+
+
+# ---------------------------------------------------------------------------
+# DUB3 multi-part provider aggregation unchanged.
+# ---------------------------------------------------------------------------
+
+def test_dub3_merge_mixed_providers_reports_openai():
+    """Guard: _merge_part_reports still downgrades to openai when any
+    part fell back (DUB3 aggregation contract)."""
+    assert tts_module._merge_part_reports([
+        {"provider": "local-clone", "model": "sayro-seedvc"},
+        {"provider": "openai", "model": "tts-1"},
+    ]) == {"provider": "openai", "model": settings.tts_model}
+    assert tts_module._merge_part_reports([
+        {"provider": "local-clone", "model": "sayro-seedvc"},
+        {"provider": "local-clone", "model": "sayro-seedvc"},
+    ]) == {"provider": "local-clone", "model": "sayro-seedvc"}
+    assert tts_module._merge_part_reports([]) == {}

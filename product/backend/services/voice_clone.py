@@ -100,12 +100,12 @@ def elevenlabs_configured() -> bool:
 
 def _which(path: str) -> bool:
     """Return True if `path` points at an existing file (absolute path)
-    or resolves on PATH (bare command)."""
+    or resolves on PATH (bare command). Directories are rejected."""
     if not path:
         return False
     p = Path(path)
     if p.is_absolute():
-        return p.exists()
+        return p.is_file()
     return shutil.which(path) is not None
 
 
@@ -313,7 +313,8 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> None:
                  " ".join(shlex.quote(c) for c in cmd))
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, cwd=cwd,
+            cmd, capture_output=True, timeout=timeout, cwd=cwd,
+            encoding="utf-8", errors="replace",
         )
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(

@@ -514,8 +514,16 @@ async def handle_turn_stream(
                 audio_b64 = concat_wav_b64(parts_b64)
             else:
                 reply = await loop.run_in_executor(None, respond, conversation_id, transcript, language)
-                audio_b64 = await loop.run_in_executor(None, synthesize_b64, reply, language)
-                tts_report = take_last_report()
+                # Pass an explicit report dict into synthesize_b64 on the
+                # worker thread so the provider label stays truthful after
+                # per-call fallbacks (thread-local take_last_report() would
+                # return {} when called from the event-loop thread).
+                tts_report = {}
+
+                def _synth_chat(text: str, lang: str) -> str:
+                    return synthesize_b64(text, lang, report=tts_report)
+
+                audio_b64 = await loop.run_in_executor(None, _synth_chat, reply, language)
                 response_text, texts, parts_b64 = reply, [reply], [audio_b64]
                 yield _ndjson({"type": "part", "index": 0, "text": reply,
                                "audio": audio_b64,
