@@ -1,13 +1,16 @@
 """
-Optional voice-provider endpoints (VC1).
+Optional voice-provider endpoints (VC1 + CP5 local clone).
 
   GET  /api/voice/status    — what TTS provider is active / configured
-  POST /api/voice/provider  — switch active TTS provider (openai | elevenlabs)
+  POST /api/voice/provider  — switch active TTS provider
+                              (openai | elevenlabs | local-clone)
   POST /api/voice/enroll    — consent-gated enrollment of the user's OWN or
-                              explicitly authorized voice (1-5 samples)
+                              explicitly authorized voice (1-5 samples;
+                              ElevenLabs only)
 
 No secrets are returned or stored here; the enrolled voice_id lives in the
-out-of-repo config (settings.voice_config_path).
+out-of-repo config (settings.voice_config_path). Local-clone reference WAVs
+also stay outside the repo and are never uploaded through this API.
 """
 
 import logging

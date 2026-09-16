@@ -195,7 +195,7 @@ def _install_route_b_fake(monkeypatch, sleep_s: float = 0.0,
                           fail_once: bool = False):
     info = {
         "calls": [], "cwd": None, "fail_count": [0],
-        "sentences_dir_existed": False, "sentence_file_text": None,
+        "sentences_path_is_file": False, "sentence_file_text": None,
         "only_flag": None, "stage_flag": None, "seedvc_version": None,
     }
 
@@ -205,11 +205,11 @@ def _install_route_b_fake(monkeypatch, sleep_s: float = 0.0,
         if fail_once and info["fail_count"][0] == 0:
             info["fail_count"][0] += 1
             raise RuntimeError("simulated GPU OOM")
-        sent_dir = out_dir = None
+        sent_path = out_dir = None
         stage = only = sv = None
         for i, a in enumerate(cmd):
             if a == "--sentences" and i + 1 < len(cmd):
-                sent_dir = Path(cmd[i + 1])
+                sent_path = Path(cmd[i + 1])
             if a == "--out" and i + 1 < len(cmd):
                 out_dir = Path(cmd[i + 1])
             if a == "--stage" and i + 1 < len(cmd):
@@ -220,17 +220,18 @@ def _install_route_b_fake(monkeypatch, sleep_s: float = 0.0,
                 sv = cmd[i + 1]
         info["stage_flag"] = stage; info["only_flag"] = only
         info["seedvc_version"] = sv
-        assert sent_dir is not None, f"no --sentences in cmd: {cmd}"
+        assert sent_path is not None, f"no --sentences in cmd: {cmd}"
         assert out_dir is not None, f"no --out in cmd: {cmd}"
-        # Sentences dir was created by the caller *before* invoking us;
-        # capture that fact here because the temp dir is deleted after
-        # synthesize_local_clone returns.
-        info["sentences_dir_existed"] = sent_dir.is_dir()
+        # --sentences must point to a FILE (the numbered-sentences file)
+        # not a directory. The real wrapper calls Path(path).read_text().
+        assert sent_path.is_file(), (
+            f"--sentences must be a file, got: {sent_path} "
+            f"(is_dir={sent_path.is_dir()})"
+        )
+        info["sentences_path_is_file"] = True
         out_dir.mkdir(parents=True, exist_ok=True)
-        sfile = sent_dir / "001.txt"
-        assert sfile.is_file(), f"sentence file missing: {sfile}"
-        info["sentence_file_text"] = sfile.read_text(encoding="utf-8").strip()
-        _write_fake_wav(out_dir / "001.wav", seconds=0.2, rate=24000)
+        info["sentence_file_text"] = sent_path.read_text(encoding="utf-8").strip()
+        _write_fake_wav(out_dir / "1.wav", seconds=0.2, rate=24000)
         if sleep_s:
             time.sleep(sleep_s)
 
@@ -254,9 +255,17 @@ def test_synthesize_local_clone_happy_path_returns_valid_wav(local_configured, m
     # Real wrapper CLI flags only:
     assert cmd[2:4] == ["--stage", "all"]
     assert "--sentences" in cmd
-    # sentences dir existed when wrapper was invoked (created per-request)
-    assert info["sentences_dir_existed"] is True
-    assert info["sentence_file_text"] == "Salom dunyo"
+    # --sentences points to a FILE path (sentences.txt), not a directory —
+    # the real wrapper calls Path(path).read_text() on this argument.
+    # We assert this by inspecting what the fake_run saw WHILE the temp
+    # workspace was still alive (the temp dir is deleted in finally AFTER
+    # synthesize returns, so stat'ing the path here would be too late).
+    sent_idx = cmd.index("--sentences")
+    sent_path = Path(cmd[sent_idx + 1])
+    assert sent_path.name == "sentences.txt"
+    assert info["sentences_path_is_file"] is True
+    # The file content matches parse_numbered() expected format: "1. <text>"
+    assert info["sentence_file_text"] == "1. Salom dunyo"
     assert info["stage_flag"] == "all"
     assert info["only_flag"] == "1"
     assert info["seedvc_version"] == "v1"
@@ -286,12 +295,34 @@ def test_synthesize_local_clone_missing_output_raises(local_configured, monkeypa
     def fake_run(cmd, timeout, cwd=None):
         for i, a in enumerate(cmd):
             if a in ("--out", "--sentences") and i + 1 < len(cmd):
-                Path(cmd[i + 1]).mkdir(parents=True, exist_ok=True)
+                Path(cmd[i + 1]).parent.mkdir(parents=True, exist_ok=True)
+                p = Path(cmd[i + 1])
+                if a == "--sentences":
+                    p.write_text("1. salom\n", encoding="utf-8")
+                else:
+                    p.mkdir(parents=True, exist_ok=True)
         # Do NOT write a converted wav
     monkeypatch.setattr(voice_clone, "_run_subprocess", fake_run)
     voice_clone.set_provider("local-clone")
     with pytest.raises(RuntimeError, match="no converted WAV"):
         voice_clone.synthesize_local_clone("salom", "uz")
+
+
+def test_format_numbered_sentence_matches_parse_numbered_regex():
+    # Directly assert that _format_numbered_sentence produces a line that
+    # parse_numbered() (re.compile(r"^(\d+)[.)]\s*(.+)$")) will match.
+    import re
+    pat = _re.compile(r"^(\d+)[.)]\s*(.+)$")
+    line = voice_clone._format_numbered_sentence(1, "Salom dunyo")
+    m = pat.match(line)
+    assert m is not None, f"line {line!r} does not match parse_numbered()"
+    assert int(m.group(1)) == 1
+    assert m.group(2) == "Salom dunyo"
+    # Multi-line input gets collapsed to a single line so splitlines()
+    # in the wrapper doesn't treat it as multiple entries.
+    multi = voice_clone._format_numbered_sentence(1, "line one\nline two")
+    assert "\n" not in multi
+    assert pat.match(multi).group(2) == "line one line two"
 
 
 def test_synthesize_local_clone_serialized_under_lock(local_configured, monkeypatch):
@@ -306,20 +337,20 @@ def test_synthesize_local_clone_serialized_under_lock(local_configured, monkeypa
             max_in_flight[0] = max(max_in_flight[0], in_flight[0])
         time.sleep(0.05)
         out_dir = None
+        sfile = None
         for i, a in enumerate(cmd):
             if a == "--out" and i + 1 < len(cmd):
                 out_dir = Path(cmd[i + 1]); break
-        assert out_dir is not None
-        out_dir.mkdir(parents=True, exist_ok=True)
-        # Also ensure the sentences dir exists with the file (it will, from
-        # the caller, but be defensive for this test-local fake).
         for i, a in enumerate(cmd):
             if a == "--sentences" and i + 1 < len(cmd):
-                sd = Path(cmd[i + 1])
-                if sd.is_dir() and not (sd / "001.txt").exists():
-                    (sd / "001.txt").write_text("salom", encoding="utf-8")
-                break
-        _write_fake_wav(out_dir / "001.wav", seconds=0.05, rate=24000)
+                sfile = Path(cmd[i + 1]); break
+        assert out_dir is not None and sfile is not None
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # Ensure the sentences file exists (it will, from the caller).
+        if not sfile.exists():
+            sfile.parent.mkdir(parents=True, exist_ok=True)
+            sfile.write_text("1. salom\n", encoding="utf-8")
+        _write_fake_wav(out_dir / "1.wav", seconds=0.05, rate=24000)
         with guard:
             in_flight[0] -= 1
 

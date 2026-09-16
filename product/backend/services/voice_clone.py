@@ -350,13 +350,26 @@ def _split_extra(extra: str) -> list:
     return shlex.split(extra) if extra else []
 
 
-def _build_route_b_cmd(text: str, sentences_path: Path, out_dir: Path) -> list:
+def _format_numbered_sentence(num: int, text: str) -> str:
+    """Format one utterance as a line that the voice-lab `parse_numbered()`
+    will accept. `parse_numbered()` splits on r\"^(\\d+)[.)]\\s*(.+)$\", so
+    the canonical line is \"<num>. <text>\". One utterance per file; we
+    always use num=1 to match --only 1.
+    """
+    # Collapse internal newlines to spaces — parse_numbered() splits on
+    # splitlines() and would treat multi-line input as multiple entries.
+    safe = " ".join((text or "").strip().splitlines()).strip()
+    return f"{num}. {safe}"
+
+
+def _build_route_b_cmd(sentences_file: Path, out_dir: Path) -> list:
     """Build the argv list for the real voice-lab Route B wrapper CLI.
 
     The wrapper expects:
       --stage all        run Sayro TTS then Seed-VC end-to-end
-      --sentences <dir>  directory containing numbered sentence files;
-                         file 001.txt (or 1.txt) holds utterance #1
+      --sentences <file> numbered-sentences FILE (parse_numbered format:
+                         lines matching \"^\\d+[.)]\\s*(.+)$\"; comments '#' and
+                         blanks skipped); --only <N> selects by numeric id
       --only 1           only process utterance #1 (one per request)
       --out <dir>        output directory for converted WAV(s)
       --target <ref.wav> Seed-VC reference voice target
@@ -364,11 +377,11 @@ def _build_route_b_cmd(text: str, sentences_path: Path, out_dir: Path) -> list:
       --seedvc-dir <dir>    Seed-VC checkout (wrapper uses as cwd)
       --seedvc-version v1   Use Seed-VC V1 inference.py
 
-    We write exactly one numbered sentence file into a temp sentences
-    directory per request, then run --stage all --only 1 against it.
-    Any extra operator tokens from ROUTE_B_EXTRA_ARGS are appended
-    verbatim (shlex-split) so wrapper-side flag additions don't require
-    code changes in BirOvoz.
+    We write exactly one numbered sentence into a per-request temp
+    sentences FILE, then run --stage all --only 1 against it. Any extra
+    operator tokens from ROUTE_B_EXTRA_ARGS are appended verbatim
+    (shlex-split) so wrapper-side flag additions don't require code
+    changes in BirOvoz.
     """
     script_path = _resolve_under(settings.sayro_voice_lab_dir,
                                  settings.sayro_script)
@@ -378,7 +391,7 @@ def _build_route_b_cmd(text: str, sentences_path: Path, out_dir: Path) -> list:
         settings.sayro_python,
         str(script_path),
         "--stage", "all",
-        "--sentences", str(sentences_path),
+        "--sentences", str(sentences_file),
         "--only", "1",
         "--out", str(out_dir),
         "--target", str(ref_path),
@@ -394,12 +407,13 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
     """CP5: invoke the voice-lab Route B wrapper (Sayro -> Seed-VC) for a
     single utterance, return converted WAV bytes.
 
-    Per request we create a temp workspace containing a sentences
-    subdirectory with one numbered sentence file (`001.txt` — or `1.txt`,
-    the wrapper accepts both conventions) and an output directory. The
-    wrapper is invoked with the real CLI (`--stage all --sentences <dir>
-    --only 1 --out <dir> --target … --seedvc-python … --seedvc-dir …
-    --seedvc-version v1`) with cwd = SAYRO_VOICE_LAB_DIR.
+    Per request we create a temp workspace with a numbered-sentences FILE
+    (one line "1. <text>" matching voice-lab's parse_numbered()) and an
+    output directory. The wrapper is invoked with the real CLI:
+      --stage all --sentences <tmp>/sentences.txt --only 1
+      --out <tmp>/out --target … --seedvc-python … --seedvc-dir …
+      --seedvc-version v1
+    with cwd = SAYRO_VOICE_LAB_DIR.
 
     Serialized process-wide by _local_clone_lock so concurrent DUB3
     sentences can never load Sayro simultaneously and OOM the GPU.
@@ -420,21 +434,23 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="birovoz_localclone_"))
-    sentences_dir = tmp_dir / "sentences"
-    sentences_dir.mkdir(parents=True, exist_ok=True)
-    # Write the single utterance as sentence #1. Use a "001.txt" naming
-    # convention (zero-padded) which is the common batch-TTS layout; the
-    # --only 1 flag guarantees we process exactly that utterance.
-    sentence_file = sentences_dir / "001.txt"
-    sentence_file.write_text(text.strip(), encoding="utf-8")
     out_dir = tmp_dir / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
+    # Write the single utterance as a numbered-sentences FILE that
+    # parse_numbered() will accept: one line "1. <text>" (UTF-8). Using a
+    # file (not a directory) is required — the wrapper calls
+    # Path(path).read_text() on --sentences and splits into lines.
+    sentences_file = tmp_dir / "sentences.txt"
+    sentences_file.write_text(
+        _format_numbered_sentence(1, text) + "\n",
+        encoding="utf-8",
+    )
     try:
         global _local_clone_busy
         with _local_clone_lock:
             _local_clone_busy = True
             try:
-                cmd = _build_route_b_cmd(text, sentences_dir, out_dir)
+                cmd = _build_route_b_cmd(sentences_file, out_dir)
                 cwd = settings.sayro_voice_lab_dir or None
                 _run_subprocess(cmd,
                                 timeout=settings.local_clone_timeout_s,
@@ -442,7 +458,7 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
             finally:
                 _local_clone_busy = False
 
-        converted = _find_converted_output(out_dir, "001")
+        converted = _find_converted_output(out_dir, "1")
         data = converted.read_bytes()
         if not data:
             raise RuntimeError("Route B produced an empty converted WAV")

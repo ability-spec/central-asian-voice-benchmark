@@ -83,6 +83,35 @@ def el_configured(voice_env, monkeypatch):
 
 
 @pytest.fixture()
+def local_configured(voice_env, tmp_path, monkeypatch):
+    """CP5 local-clone appears fully configured (fake paths; subprocess is
+    never actually invoked in these tests)."""
+    lab = tmp_path / "voice-lab"; lab.mkdir()
+    (lab / "b_sayro_then_seedvc.py").write_bytes(b"# wrapper\n")
+    py = tmp_path / "py"; py.write_bytes(b"#!py\n"); py.chmod(0o755)
+    sd = tmp_path / "seedvc"; sd.mkdir()
+    spy = tmp_path / "sp"; spy.write_bytes(b"#!py\n"); spy.chmod(0o755)
+    ref = tmp_path / "ref.wav"
+    import wave as _w, struct as _st, io as _io
+    buf = _io.BytesIO()
+    with _w.open(buf, "wb") as wf:
+        wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(24000)
+        wf.writeframes(_st.pack("<h", 100) * 2400)
+    ref.write_bytes(buf.getvalue())
+    monkeypatch.setattr(settings, "sayro_voice_lab_dir", str(lab))
+    monkeypatch.setattr(settings, "sayro_script", "b_sayro_then_seedvc.py")
+    monkeypatch.setattr(settings, "sayro_python", str(py))
+    monkeypatch.setattr(settings, "seedvc_python", str(spy))
+    monkeypatch.setattr(settings, "seedvc_dir", str(sd))
+    monkeypatch.setattr(settings, "seedvc_reference_wav", str(ref))
+    monkeypatch.setattr(settings, "route_b_extra_args", "")
+    monkeypatch.setattr(settings, "local_clone_timeout_s", 30)
+    monkeypatch.setattr(voice_clone, "_active_provider", None)
+    voice_clone._local_clone_busy = False
+    return tmp_path
+
+
+@pytest.fixture()
 def mock_turn_env(tmp_path, monkeypatch):
     """Mock-mode /api/turn environment (pattern from test_product_api.py)."""
     monkeypatch.setattr(settings, "openai_api_key", "")
@@ -291,6 +320,88 @@ def test_voice_provider_endpoint_switches_when_configured(el_configured):
     assert r.status_code == 200 and r.json()["resolved_provider"] == "elevenlabs"
     r = client.post("/api/voice/provider", json={"provider": "openai"})
     assert r.status_code == 200 and r.json()["resolved_provider"] == "openai"
+
+
+# ---------------------------------------------------------------------------
+# CP5 local-clone provider endpoint — regression guard for the
+# "provider must be 'openai' or 'elevenlabs'" bug.
+# ---------------------------------------------------------------------------
+
+def test_set_provider_accepts_local_clone_when_configured(local_configured):
+    # local-clone is in VALID_PROVIDERS — set_provider must accept it when
+    # the voice-lab Route B wrapper + Seed-VC are configured.
+    voice_clone.set_provider("local-clone")
+    assert voice_clone.active_provider() == "local-clone"
+    assert voice_clone.resolved_provider() == "local-clone"
+    assert voice_clone.tts_label() == "local-clone/sayro-seedvc"
+    voice_clone.set_provider("openai")
+    assert voice_clone.resolved_provider() == "openai"
+
+
+def test_voice_provider_endpoint_openai_works(voice_env):
+    r = client.post("/api/voice/provider", json={"provider": "openai"})
+    assert r.status_code == 200
+    assert r.json()["active_provider"] == "openai"
+    assert r.json()["resolved_provider"] == "openai"
+
+
+def test_voice_provider_endpoint_elevenlabs_rejects_when_unconfigured(voice_env):
+    r = client.post("/api/voice/provider", json={"provider": "elevenlabs"})
+    assert r.status_code == 400
+    assert "not configured" in r.json()["detail"]
+
+
+def test_voice_provider_endpoint_elevenlabs_accepts_when_configured(el_configured):
+    r = client.post("/api/voice/provider", json={"provider": "elevenlabs"})
+    assert r.status_code == 200
+    assert r.json()["active_provider"] == "elevenlabs"
+
+
+def test_voice_provider_endpoint_local_clone_rejects_when_unconfigured(voice_env):
+    # The invalid-provider message must NOT fire; we expect the
+    # "not configured" error instead. This is the specific regression
+    # reported during Windows E2E.
+    r = client.post("/api/voice/provider", json={"provider": "local-clone"})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert "provider must be" not in detail
+    assert "not configured" in detail
+
+
+def test_voice_provider_endpoint_local_clone_accepts_when_configured(local_configured):
+    r = client.post("/api/voice/provider", json={"provider": "local-clone"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["active_provider"] == "local-clone"
+    assert body["resolved_provider"] == "local-clone"
+    assert body["local_clone"]["configured"] is True
+    assert body["local_clone"]["languages"] == ["uz"]
+    assert body["local_clone"]["model"] == "sayro-seedvc"
+    # Kazakh stays on OpenAI via tts.synthesize language gate; verify the
+    # gate helper is present and reports uz-only.
+    assert voice_clone._local_clone_supported_language("uz") is True
+    assert voice_clone._local_clone_supported_language("kk") is False
+
+
+def test_voice_provider_endpoint_rejects_invalid_provider(local_configured):
+    # Configure local-clone so we know rejection is about the name, not config.
+    r = client.post("/api/voice/provider", json={"provider": "azure"})
+    assert r.status_code == 400
+    # Error message lists all three valid providers (regression guard).
+    assert "local-clone" in r.json()["detail"]
+
+
+def test_voice_status_reports_active_provider_local_clone(local_configured):
+    client.post("/api/voice/provider", json={"provider": "local-clone"})
+    r = client.get("/api/voice/status")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["active_provider"] == "local-clone"
+    assert body["resolved_provider"] == "local-clone"
+    assert body["local_clone"]["configured"] is True
+    assert body["fallback"] == "openai"
+    # Reset for test isolation
+    client.post("/api/voice/provider", json={"provider": "openai"})
 
 
 def test_voice_enroll_endpoint(el_configured, monkeypatch):
