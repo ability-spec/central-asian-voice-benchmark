@@ -425,7 +425,7 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
       * local_clone_configured() is True (checked by caller).
       * language == 'uz' (Kazakh stays on OpenAI at the tts.synthesize layer).
     """
-    import wave as _wave
+    
     if not text or not text.strip():
         raise RuntimeError("local-clone: empty text")
     if not _local_clone_supported_language(language):
@@ -464,12 +464,48 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         if not data:
             raise RuntimeError("Route B produced an empty converted WAV")
         # Validate WAV before returning.
-        try:
-            with _wave.open(io.BytesIO(data), "rb") as wf:
-                if wf.getnframes() == 0:
-                    raise RuntimeError("Converted WAV has zero frames")
-        except Exception as e:
-            raise RuntimeError(f"Converted audio is not a valid WAV: {e}") from e
+        # Validate RIFF/WAVE without rejecting valid IEEE-float PCM (format 3).
+        if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+            raise RuntimeError("Converted audio is not a valid WAV: missing RIFF/WAVE header")
+
+        fmt_code = None
+        channels = None
+        sample_rate = None
+        bits_per_sample = None
+        data_size = 0
+
+        pos = 12
+        while pos + 8 <= len(data):
+            chunk_id = data[pos:pos + 4]
+            chunk_size = int.from_bytes(data[pos + 4:pos + 8], "little")
+            chunk_start = pos + 8
+            chunk_end = chunk_start + chunk_size
+
+            if chunk_end > len(data):
+                raise RuntimeError("Converted audio is not a valid WAV: truncated chunk")
+
+            if chunk_id == b"fmt " and chunk_size >= 16:
+                fmt_code = int.from_bytes(data[chunk_start:chunk_start + 2], "little")
+                channels = int.from_bytes(data[chunk_start + 2:chunk_start + 4], "little")
+                sample_rate = int.from_bytes(data[chunk_start + 4:chunk_start + 8], "little")
+                bits_per_sample = int.from_bytes(
+                    data[chunk_start + 14:chunk_start + 16], "little"
+                )
+
+            elif chunk_id == b"data":
+                data_size = chunk_size
+
+            pos = chunk_end + (chunk_size & 1)
+
+        if fmt_code not in (1, 3):
+            raise RuntimeError(
+                f"Converted audio is not supported PCM WAV: format code {fmt_code}"
+            )
+        if not channels or not sample_rate or not bits_per_sample:
+            raise RuntimeError("Converted audio is not a valid WAV: incomplete fmt chunk")
+        if data_size <= 0:
+            raise RuntimeError("Converted WAV has zero audio data")
+
         return data
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
