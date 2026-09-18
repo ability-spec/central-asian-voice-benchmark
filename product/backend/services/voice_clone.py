@@ -30,12 +30,14 @@ import io
 import json
 import logging
 import os
+import re as _re
 import shlex
 import shutil
 import struct
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.request
 import uuid
 from pathlib import Path
@@ -305,35 +307,269 @@ def synthesize_elevenlabs(text: str, language: str) -> bytes:
 # unit tests).
 # ---------------------------------------------------------------------------
 
-def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> None:
-    """Run `cmd` (argv list), raise RuntimeError on non-zero / timeout /
-    missing executable. stdout/stderr captured for logging."""
+# Regexes matching the timing/progress markers emitted by the real
+# b_sayro_then_seedvc.py wrapper on stdout (verified against Windows E2E
+# logs). All output is free-form and markers may move between wrapper
+# versions; missing markers are tolerated — timing fields stay None and
+# we fall back to directory scanning.
+_R_LOADED = _re.compile(r"\[B\]\s+loaded\s+in\s+([0-9.]+)s")
+_R_SAYRO_OUT = _re.compile(r"\[B\]\s+(t\d+)\s+->\s+(\S+)")
+_R_PEAK_GPU = _re.compile(r"\[B\]\s+peak GPU memory:\s*(\S+)")
+_R_VC_OUT = _re.compile(r"\[B\]\[vc\]\s+(\S+)\s+->\s+(\S+)")
+_R_SAYRO_DONE = _re.compile(r"\[B\]\s+Sayro stage done")
+_R_CONVERT_DONE = _re.compile(r"\[B\]\s+convert stage done")
+
+# Child-process environment overrides. These are intentionally SAFE,
+# quality-neutral, and additive — they do not change numerics, sampling,
+# or model selection; they only prevent thread oversubscription and
+# force I/O flushing so tail logs are available on failure.
+_CHILD_ENV_HARDEN = {
+    # Unbuffered stdout/stderr so [B] stage markers flush immediately;
+    # also makes tail-log capture on crash/timeout reliable on Windows
+    # where Python defaults to block buffering when not on a TTY.
+    "PYTHONUNBUFFERED": "1",
+    # Force libgomp / MKL / OpenBLAS to single-threaded BLAS ops. The
+    # wrapper already runs its GPU work in one process; extra CPU threads
+    # thrash a laptop 6-core CPU during tensor prep / audio I/O and can
+    # SLOW DOWN overall latency from contention. This does not touch
+    # CUDA kernel parallelism — only CPU-side BLAS threads.
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "NUMEXPR_NUM_THREADS": "1",
+    # CuDNN benchmark + V8 API: picks fastest cuDNN conv algorithm for
+    # the current input size on the first run; safe, quality-neutral,
+    # and matches what Seed-VC already sets internally in many configs.
+    "TORCH_CUDNN_V8_API_ENABLED": "1",
+}
+
+
+def _build_child_env() -> dict:
+    """Build the environment dict for the Route B subprocess.
+
+    Inherits os.environ (GPU drivers, CUDA_PATH, PATH, SYSTEMROOT, etc.
+    must reach the child on Windows) and applies latency-safe overrides
+    that do not change model numerics.
+    """
+    env = os.environ.copy()
+    env.update(_CHILD_ENV_HARDEN)
+    return env
+
+
+def _parse_wrapper_markers(line: str, timings: dict, markers: dict) -> None:
+    """Parse one line of wrapper stdout, updating timings/markers in place.
+
+    We record wall-clock deltas from subprocess start for each stage:
+      - sayro_load_s      (from "[B] loaded in Xs" — Sayro model load)
+      - sayro_out         (from "[B] t01 -> <path>" — Sayro wrote TTS wav)
+      - sayro_done_s      (from "[B] Sayro stage done" — Sayro fully done)
+      - vc_out            (from "[B][vc] t01.wav -> <path>" — Seed-VC wrote
+                          converted wav; <path> is relative to --out dir)
+      - convert_done_s    (from "[B] convert stage done" — wrapper exiting)
+    """
+    m = _R_LOADED.search(line)
+    if m and "sayro_load_s" not in timings:
+        try:
+            timings["sayro_load_s"] = float(m.group(1))
+        except ValueError:
+            pass
+        return
+    m = _R_SAYRO_OUT.search(line)
+    if m and "sayro_out" not in markers:
+        markers["sayro_out"] = m.group(2)
+        timings.setdefault("sayro_t_done_s", time.monotonic() - timings.get("_t0", 0.0))
+        return
+    if _R_SAYRO_DONE.search(line):
+        timings["sayro_done_s"] = round(
+            time.monotonic() - timings.get("_t0", 0.0), 3
+        )
+        return
+    m = _R_VC_OUT.search(line)
+    if m:
+        # Last matching vc output wins if multiple lines appear.
+        markers["vc_out"] = m.group(2)
+        timings["vc_t_done_s"] = round(
+            time.monotonic() - timings.get("_t0", 0.0), 3
+        )
+        return
+    if _R_CONVERT_DONE.search(line):
+        timings["convert_done_s"] = round(
+            time.monotonic() - timings.get("_t0", 0.0), 3
+        )
+        return
+    m = _R_PEAK_GPU.search(line)
+    if m:
+        markers["peak_gpu_mem"] = m.group(1)
+
+
+def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
+    """Run `cmd` (argv list); raise RuntimeError on non-zero / timeout /
+    missing executable. Streams stdout line-by-line to parse wrapper
+    timing markers and keep a tail ring buffer for failure diagnostics.
+
+    Returns a dict with keys:
+        stdout_tail:  last 5 stdout lines (post-marker parse)
+        stderr_tail:  last 5 stderr lines
+        timings:      parsed per-stage timing dict (see _parse_wrapper_markers)
+        markers:      parsed marker dict (vc_out path, sayro_out path, peak gpu)
+        total_s:      wall-clock seconds inside subprocess
+
+    Legacy callers/monkeypatches that returned None are tolerated by the
+    caller (synthesize_local_clone treats a non-dict return as "no timing
+    data"), but _run_subprocess itself always returns a dict.
+    """
     logger.debug("local-clone subprocess: cwd=%s argv=%s",
                  cwd or os.getcwd(),
                  " ".join(shlex.quote(c) for c in cmd))
+    t0 = time.monotonic()
+    timings = {"_t0": t0}
+    markers: dict = {}
+    out_tail: list[str] = []
+    err_tail: list[str] = []
+    proc = None
+    popen_kwargs = dict(
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
+        env=_build_child_env(),
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        bufsize=1,  # line-buffered for real-time parsing
+    )
+    # On POSIX, put the child in its own process group so os.killpg()
+    # can terminate the entire tree (wrapper + Seed-VC grandchild) on
+    # timeout. On Windows we use taskkill /T /F instead.
+    if os.name != "nt":
+        popen_kwargs["start_new_session"] = True
     try:
-        proc = subprocess.run(
-            cmd, capture_output=True, timeout=timeout, cwd=cwd,
-            encoding="utf-8", errors="replace",
-        )
-    except subprocess.TimeoutExpired as e:
-        raise RuntimeError(
-            f"local-clone subprocess timed out after {timeout}s: {cmd[0]}"
-        ) from e
+        proc = subprocess.Popen(cmd, **popen_kwargs)
     except FileNotFoundError as e:
         raise RuntimeError(f"local-clone executable not found: {cmd[0]}") from e
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-5:]
+
+    # Drain BOTH stdout and stderr in daemon threads. Reading stdout
+    # synchronously in the main thread would block forever when the
+    # child is alive but silent (e.g. during a long GPU inference with
+    # no output), preventing proc.wait() from ever being reached and
+    # making the timeout unreachable.
+    def _drain(pipe, tail, is_stdout: bool) -> None:
+        try:
+            for raw in pipe:
+                line = raw.rstrip("\r\n")
+                if line:
+                    tail.append(line)
+                    while len(tail) > 5:
+                        tail.pop(0)
+                    if is_stdout:
+                        logger.debug("route-b: %s", line)
+                        _parse_wrapper_markers(line, timings, markers)
+        except Exception:
+            pass
+    assert proc.stdout is not None and proc.stderr is not None
+    out_thread = threading.Thread(
+        target=_drain, args=(proc.stdout, out_tail, True), daemon=True,
+    )
+    err_thread = threading.Thread(
+        target=_drain, args=(proc.stderr, err_tail, False), daemon=True,
+    )
+    out_thread.start()
+    err_thread.start()
+
+    deadline = t0 + timeout
+    killed = False
+    try:
+        while True:
+            if proc.poll() is not None:
+                break
+            if time.monotonic() >= deadline:
+                killed = True
+                # Kill the whole process tree on timeout. On Windows
+                # terminate() kills only the parent; taskkill /T /F is
+                # the reliable way to kill the child python.exe and its
+                # Seed-VC grandchild. On POSIX os.killpg terminates the
+                # process group we created via start_new_session=True.
+                try:
+                    if os.name == "nt":
+                        subprocess.run(
+                            ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                            capture_output=True, timeout=5,
+                        )
+                    else:
+                        try:
+                            os.killpg(os.getpgid(proc.pid), 9)
+                        except Exception:
+                            proc.kill()
+                except Exception:
+                    pass
+                break
+            time.sleep(0.05)
+        out_thread.join(timeout=3.0)
+        err_thread.join(timeout=3.0)
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+    except BaseException:
+        try:
+            if proc.poll() is None:
+                try:
+                    if os.name != "nt":
+                        os.killpg(os.getpgid(proc.pid), 9)
+                    else:
+                        proc.kill()
+                except Exception:
+                    proc.kill()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        raise
+
+    total_s = time.monotonic() - t0
+    timings["total_s"] = round(total_s, 3)
+    timings.pop("_t0", None)
+
+    if killed:
+        tail_src = err_tail if err_tail else out_tail
         raise RuntimeError(
-            f"local-clone subprocess failed ({cmd[0]}, exit={proc.returncode}): "
-            + " | ".join(tail)
+            f"local-clone subprocess timed out after {timeout}s: {cmd[0]}"
+            + ((" | " + " | ".join(tail_src[-3:])) if tail_src else "")
         )
+
+    if proc.returncode != 0:
+        tail_src = err_tail if err_tail else out_tail
+        tail = " | ".join(tail_src[-5:])
+        raise RuntimeError(
+            f"local-clone subprocess failed ({cmd[0]}, exit={proc.returncode}): {tail}"
+        )
+
+    logger.info(
+        "local-clone Route B timings (s): total=%.2f sayro_load=%s sayro_done=%s "
+        "vc_done=%s peak_gpu=%s",
+        total_s,
+        timings.get("sayro_load_s"),
+        timings.get("sayro_done_s"),
+        timings.get("vc_t_done_s"),
+        markers.get("peak_gpu_mem"),
+    )
+    return {
+        "stdout_tail": out_tail,
+        "stderr_tail": err_tail,
+        "timings": timings,
+        "markers": markers,
+        "total_s": total_s,
+    }
 
 
 def _find_converted_output(out_dir: Path, source_stem: str) -> Path:
     """Route B wrapper delegates to Seed-VC V1 inference.py, which writes
     one WAV per source file into --output. We return the newest WAV under
-    out_dir (robust to V1 writing <source_stem>.wav vs V2 adding suffixes)."""
+    out_dir (robust to V1 writing <source_stem>.wav vs V2 adding suffixes).
+    This is a fallback used only when the wrapper did not emit the
+    "[B][vc] ... -> <relpath>" marker (older wrapper / log drift)."""
     candidates = sorted(
         [p for p in out_dir.rglob("*.wav") if p.is_file()],
         key=lambda p: p.stat().st_mtime, reverse=True,
@@ -446,24 +682,48 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         _format_numbered_sentence(1, text) + "\n",
         encoding="utf-8",
     )
+    lock_wait_t0: float = 0.0
     try:
         global _local_clone_busy
+        # Time how long we spent waiting for the lock (queueing behind
+        # another in-flight clone) — useful to separate lock contention
+        # from real model/inference time in logs.
+        lock_wait_t0 = time.monotonic()
         with _local_clone_lock:
+            lock_wait_s = round(time.monotonic() - lock_wait_t0, 3)
             _local_clone_busy = True
             try:
                 cmd = _build_route_b_cmd(sentences_file, out_dir)
                 cwd = settings.sayro_voice_lab_dir or None
-                _run_subprocess(cmd,
-                                timeout=settings.local_clone_timeout_s,
-                                cwd=cwd)
+                # Support both the new dict-returning _run_subprocess and
+                # legacy monkeypatches/tests that return None — treat a
+                # non-dict return as "no parsed timing data".
+                raw = _run_subprocess(
+                    cmd,
+                    timeout=settings.local_clone_timeout_s,
+                    cwd=cwd,
+                )
+                if not isinstance(raw, dict):
+                    raw = {"timings": {}, "markers": {}, "total_s": 0.0}
+                result = raw
             finally:
                 _local_clone_busy = False
 
-        converted = _find_converted_output(out_dir, "1")
+        # Resolve the converted WAV. Prefer the exact relative path the
+        # wrapper printed in "[B][vc] t01.wav -> <relpath>" (relative to
+        # --out dir); fall back to directory scanning if the marker was
+        # missing (older wrapper / log format drift).
+        vc_rel = result.get("markers", {}).get("vc_out")
+        converted = None
+        if vc_rel:
+            candidate = out_dir / vc_rel
+            if candidate.is_file():
+                converted = candidate
+        if converted is None:
+            converted = _find_converted_output(out_dir, "1")
         data = converted.read_bytes()
         if not data:
             raise RuntimeError("Route B produced an empty converted WAV")
-        # Validate WAV before returning.
         # Validate RIFF/WAVE without rejecting valid IEEE-float PCM (format 3).
         if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
             raise RuntimeError("Converted audio is not a valid WAV: missing RIFF/WAVE header")
@@ -506,6 +766,17 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         if data_size <= 0:
             raise RuntimeError("Converted WAV has zero audio data")
 
+        timings = result.get("timings", {})
+        timings["lock_wait_s"] = lock_wait_s
+        logger.info(
+            "local-clone produced %d byte WAV from %s | lock_wait=%.2fs "
+            "total=%.2fs sayro_load=%s sayro_done=%s vc_done=%s peak_gpu=%s",
+            len(data), converted,
+            lock_wait_s, result.get("total_s", 0.0),
+            timings.get("sayro_load_s"), timings.get("sayro_done_s"),
+            timings.get("vc_t_done_s"),
+            result.get("markers", {}).get("peak_gpu_mem"),
+        )
         return data
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

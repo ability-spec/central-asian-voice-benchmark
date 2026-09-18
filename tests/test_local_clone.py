@@ -760,3 +760,156 @@ def test_dub3_merge_mixed_providers_reports_openai():
         {"provider": "local-clone", "model": "sayro-seedvc"},
     ]) == {"provider": "local-clone", "model": "sayro-seedvc"}
     assert tts_module._merge_part_reports([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# Latency instrumentation: marker parsing, Popen streaming, env hardening,
+# marker-based VC output selection.
+# ---------------------------------------------------------------------------
+
+def _make_emitting_script(out_dir: Path, emit_vc_path: str = "b_sayro_vc/t01.wav",
+                          exit_code: int = 0):
+    """Write a tiny Python script that prints the real Route B marker
+    lines exactly as observed on Windows, plus a real WAV file into
+    <out_dir>/<emit_vc_path>. Returns path to script."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    vc_full = out_dir / emit_vc_path
+    vc_full.parent.mkdir(parents=True, exist_ok=True)
+    _write_fake_wav(vc_full, seconds=0.1, rate=22050)
+    # Also write Sayro's raw wav one directory up (decoy).
+    sayro_full = out_dir / "b_sayro" / "t01.wav"
+    sayro_full.parent.mkdir(parents=True, exist_ok=True)
+    _write_fake_wav(sayro_full, seconds=0.05, rate=22050)
+    script = out_dir.parent / "emit.py"
+    out_dir_esc = str(out_dir).replace("\\", "\\\\")
+    script.write_text(
+        "import sys, os, time\n"
+        f"os.makedirs(r'{out_dir_esc}', exist_ok=True)\n"
+        "print('[B] loaded in 12.5s', flush=True)\n"
+        "print('[B] t01 -> b_sayro/t01.wav', flush=True)\n"
+        "print('[B] peak GPU memory: 4.35 GB', flush=True)\n"
+        "print('[B] Sayro stage done - VRAM released', flush=True)\n"
+        "print('[B] Seed-VC python: some/python.exe', flush=True)\n"
+        "print('[B] Seed-VC: v1 via some/inference.py', flush=True)\n"
+        "print('[B][vc] t01.wav -> b_sayro_vc/t01.wav', flush=True)\n"
+        "print('[B] convert stage done', flush=True)\n"
+        f"sys.exit({exit_code})\n",
+        encoding="utf-8",
+    )
+    return script
+
+
+def test_run_subprocess_parses_route_b_markers(tmp_path):
+    """_run_subprocess must parse the wrapper's [B] markers and return
+    total/sayro_load/vc timing info + vc_out relative path."""
+    import sys as _sys
+    out_dir = tmp_path / "emit" / "out"
+    script = _make_emitting_script(out_dir)
+    result = voice_clone._run_subprocess(
+        [_sys.executable, str(script)],
+        timeout=10,
+        cwd=str(tmp_path),
+    )
+    assert isinstance(result, dict), "_run_subprocess must return a dict"
+    assert result["total_s"] >= 0.0
+    timings = result["timings"]
+    assert timings["sayro_load_s"] == 12.5
+    assert "sayro_done_s" in timings
+    assert "vc_t_done_s" in timings
+    assert "convert_done_s" in timings
+    assert "total_s" in timings
+    assert result["markers"]["vc_out"] == "b_sayro_vc/t01.wav"
+    assert result["markers"]["peak_gpu_mem"] == "4.35"
+
+
+def test_run_subprocess_sets_pythonunbuffered_env(tmp_path):
+    """The child must receive PYTHONUNBUFFERED=1 and BLAS single-thread
+    env overrides so output flushes immediately and CPU BLAS threads do
+    not thrash."""
+    import sys as _sys
+    script = tmp_path / "envcheck.py"
+    script.write_text(
+        "import os, sys\n"
+        "vals = {\n"
+        "    'PYTHONUNBUFFERED': os.environ.get('PYTHONUNBUFFERED'),\n"
+        "    'OMP_NUM_THREADS': os.environ.get('OMP_NUM_THREADS'),\n"
+        "    'MKL_NUM_THREADS': os.environ.get('MKL_NUM_THREADS'),\n"
+        "    'TORCH_CUDNN_V8_API_ENABLED': os.environ.get('TORCH_CUDNN_V8_API_ENABLED'),\n"
+        "}\n"
+        "sys.stdout.write('ENV:' + repr(vals) + '\\n')\n"
+        "sys.stdout.flush()\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    result = voice_clone._run_subprocess(
+        [_sys.executable, str(script)], timeout=10, cwd=str(tmp_path),
+    )
+    joined = "\n".join(result["stdout_tail"])
+    assert "'PYTHONUNBUFFERED': '1'" in joined
+    assert "'OMP_NUM_THREADS': '1'" in joined
+    assert "'MKL_NUM_THREADS': '1'" in joined
+    assert "'TORCH_CUDNN_V8_API_ENABLED': '1'" in joined
+
+
+def test_run_subprocess_timeout_kills_child(tmp_path):
+    """A child that outlasts timeout must be killed promptly and raise
+    RuntimeError, not hang the caller."""
+    import sys as _sys
+    script = tmp_path / "sleeper.py"
+    script.write_text(
+        "import time, sys\n"
+        "print('[B] loaded in 1.0s', flush=True)\n"
+        "time.sleep(30)\n"
+        "sys.exit(0)\n",
+        encoding="utf-8",
+    )
+    t0 = time.time()
+    with pytest.raises(RuntimeError, match="timed out"):
+        voice_clone._run_subprocess(
+            [_sys.executable, str(script)], timeout=2, cwd=str(tmp_path),
+        )
+    elapsed = time.time() - t0
+    assert elapsed < 10, f"timeout kill took too long ({elapsed:.1f}s)"
+
+
+def test_synthesize_uses_markers_to_pick_vc_output(local_configured, monkeypatch):
+    """When the wrapper emits a '[B][vc] ... -> b_sayro_vc/t01.wav' marker,
+    BirOvoz must pick THAT file rather than falling back to a directory
+    scan (and never pick a stray Sayro-raw wav)."""
+    captured = {"vc_bytes": None, "sayro_bytes": None}
+    def fake_run(cmd, timeout, cwd=None):
+        out_path = None
+        for i, a in enumerate(cmd):
+            if a == "--out" and i + 1 < len(cmd):
+                out_path = Path(cmd[i + 1])
+        if out_path is not None:
+            (out_path / "b_sayro").mkdir(parents=True, exist_ok=True)
+            (out_path / "b_sayro_vc").mkdir(parents=True, exist_ok=True)
+            # Decoy Sayro-raw WAV (should NOT be picked) — very short.
+            _write_fake_wav(out_path / "b_sayro" / "t01.wav", seconds=0.05, rate=22050)
+            # Real VC wav — longer, easy to distinguish by length.
+            _write_fake_wav(out_path / "b_sayro_vc" / "t01.wav", seconds=0.25, rate=22050)
+            # Make the decoy NEWER to defeat naive mtime-only scanners.
+            now = time.time()
+            os.utime(out_path / "b_sayro_vc" / "t01.wav", (now - 20, now - 20))
+            os.utime(out_path / "b_sayro" / "t01.wav", (now, now))
+            captured["vc_bytes"] = (out_path / "b_sayro_vc" / "t01.wav").read_bytes()
+            captured["sayro_bytes"] = (out_path / "b_sayro" / "t01.wav").read_bytes()
+        return {
+            "timings": {"sayro_load_s": 1.0, "total_s": 2.0},
+            "markers": {"vc_out": "b_sayro_vc/t01.wav"},
+            "total_s": 2.0,
+            "stdout_tail": [],
+            "stderr_tail": [],
+        }
+    monkeypatch.setattr(voice_clone, "_run_subprocess", fake_run)
+    voice_clone.set_provider("local-clone")
+    out = voice_clone.synthesize_local_clone("Salom", "uz")
+    # The returned bytes must match the VC wav (0.25s @ 22050), not the
+    # shorter Sayro decoy (0.05s @ 22050). Distinguish by byte length.
+    assert captured["vc_bytes"] is not None and captured["sayro_bytes"] is not None
+    assert out == captured["vc_bytes"]
+    assert out != captured["sayro_bytes"]
+    # Length sanity: 0.25s * 22050Hz * 2 bytes/samp (s16 PCM) + 44-byte
+    # WAV header ≈ 11069 bytes; Sayro decoy ≈ 2249 bytes.
+    assert len(out) > 5000, f"VC wav too short ({len(out)} bytes)"
