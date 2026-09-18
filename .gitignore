@@ -45,3 +45,8 @@ product/backend/.venv/
 uploads/
 audio_output/
 logs/
+
+# Local patch/bundle artifacts
+*.patch
+*.bundle
+.env
