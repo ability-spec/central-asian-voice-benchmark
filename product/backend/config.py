@@ -40,27 +40,31 @@ class Settings:
         )
     )
 
-    # CP5: local voice clone invokes the EXISTING Route B wrapper in voice-lab
-    # (b_sayro_then_seedvc.py). No Sayro CLI is invented; no voice-lab or
-    # seed-vc code is copied into the product. All paths live OUTSIDE the
-    # repository; nothing is copied into the product tree. Every value is
-    # env-driven and defaults to empty -> feature gracefully unavailable,
-    # Standard/OpenAI voice remains the fallback.
+    # CP5: local voice clone via the VENDORED Route B wrapper under
+    # services/routeb/b_sayro_then_seedvc.py. The wrapper loads Sayro in its
+    # own Python process and shells out to Seed-VC (cwd=SEEDVC_DIR). All
+    # heavy model code (Sayro, Seed-VC) lives OUTSIDE this repo; only the
+    # orchestration wrapper is vendored so the demo does not depend on an
+    # unmanaged external voice-lab directory.
     #
-    # Wrapper CLI (as implemented by b_sayro_then_seedvc.py):
-    #   <SAYRO_PYTHON> <SAYRO_SCRIPT> --stage all --sentences <dir> --only 1
-    #     --out <dir> --target <ref.wav> --seedvc-python <py>
-    #     --seedvc-dir <dir> --seedvc-version v1
-    # The wrapper handles Sayro load / Uzbek normalization / model teardown
-    # / Seed-VC subprocess internally with the known-good V1 flags
-    # (diffusion-steps=25, cfg-rate=0.8, f0 off, fp16, cwd=SEEDVC_DIR).
+    # Resolution order (each field can be absolute or relative; the
+    # _resolve_* helpers in services/voice_clone.py implement this):
+    #   1. Explicit env var (absolute path used verbatim).
+    #   2. Conventional in-repo default when it exists on disk:
+    #        SAYRO_SCRIPT    -> product/backend/services/routeb/b_sayro_then_seedvc.py
+    #        SEEDVC_DIR      -> product/backend/third_party/seed-vc
+    #        SEEDVC_PYTHON   -> SEEDVC_DIR/.venv-vc/Scripts/python.exe (Windows)
+    #                           or SEEDVC_DIR/.venv-vc/bin/python (POSIX)
+    #        SAYRO_PYTHON    -> product/backend/.venv-routeb/...
+    #   3. Otherwise empty -> feature gracefully disabled (OpenAI fallback).
+    #
+    # Reference WAV (SEEDVC_REFERENCE_WAV) has NO default — it must point at
+    # the user's enrolled voice and lives outside the repo.
     sayro_voice_lab_dir: str = field(
         default_factory=lambda: os.environ.get("SAYRO_VOICE_LAB_DIR", "")
     )
     sayro_script: str = field(
-        default_factory=lambda: os.environ.get(
-            "SAYRO_SCRIPT", "b_sayro_then_seedvc.py"
-        )
+        default_factory=lambda: os.environ.get("SAYRO_SCRIPT", "")
     )
     sayro_python: str = field(
         default_factory=lambda: os.environ.get("SAYRO_PYTHON", "")
@@ -75,13 +79,28 @@ class Settings:
     seedvc_reference_wav: str = field(
         default_factory=lambda: os.environ.get("SEEDVC_REFERENCE_WAV", "")
     )
+    # Seed-VC version + quality knobs. Defaults match the 74.86s / 5-sentence
+    # production benchmark (v2 persistent worker + target-cache, 15 steps,
+    # intelligibility/similarity 0.8). Override via env only when benchmarking.
+    seedvc_version: str = field(
+        default_factory=lambda: os.environ.get("SEEDVC_VERSION", "v2")
+    )
+    route_b_diffusion_steps: int = field(
+        default_factory=lambda: int(os.environ.get("ROUTE_B_DIFFUSION_STEPS", "15"))
+    )
+    route_b_intelligibility: float = field(
+        default_factory=lambda: float(os.environ.get("ROUTE_B_INTELLIGIBILITY", "0.8"))
+    )
+    route_b_similarity: float = field(
+        default_factory=lambda: float(os.environ.get("ROUTE_B_SIMILARITY", "0.8"))
+    )
     # Optional extra argv tokens appended verbatim (shlex-split), so any
     # wrapper flag we don't yet know about is reachable without code changes.
     route_b_extra_args: str = field(
         default_factory=lambda: os.environ.get("ROUTE_B_EXTRA_ARGS", "")
     )
     local_clone_timeout_s: int = field(
-        default_factory=lambda: int(os.environ.get("LOCAL_CLONE_TIMEOUT_S", "180"))
+        default_factory=lambda: int(os.environ.get("LOCAL_CLONE_TIMEOUT_S", "300"))
     )
 
     # Server

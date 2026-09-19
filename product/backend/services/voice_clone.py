@@ -1,6 +1,6 @@
 """
 Optional ElevenLabs voice provider for BirOvoz (VC1)
-+ CP5 local-clone provider (Sayro via voice-lab Route B -> Seed-VC V1).
++ CP5 local-clone provider (Sayro -> vendored Route B wrapper -> Seed-VC v2).
 
 Design constraints (agreed scope):
   * Providers are OPTIONAL; OpenAI stays the default and the runtime
@@ -10,23 +10,22 @@ Design constraints (agreed scope):
   * ElevenLabs: zero new deps; urllib HTTP API; samples written to a
     temp dir and always deleted; resulting voice_id stored OUTSIDE the
     repo at settings.voice_config_path (default ~/.birovoz_voice.json).
-  * Local clone (CP5): invokes the EXISTING Route B wrapper in voice-lab
-    (b_sayro_then_seedvc.py). The wrapper loads Sayro (1.7B) in-process,
-    optionally normalizes Uzbek via uzbek_normalizer.py, then shells out
-    to Seed-VC V1 inference.py (cwd=SEEDVC_DIR). The BirOvoz product
-    does NOT import Sayro or Seed-VC directly — it shells out to the
-    wrapper in a per-request temp workspace and returns the converted
-    WAV. A module-level Lock serializes all local-clone calls so we never
-    race two Sayro model loads on the same GPU. Kazakh is NOT supported
-    in MVP — Route B is Uzbek-only and those calls transparently stay
-    on OpenAI; no Kazakh output is ever routed through Sayro.
+  * Local clone (CP5): invokes the VENDORED Route B wrapper under
+    product/backend/services/routeb/b_sayro_then_seedvc.py (an absolute
+    external path via SAYRO_SCRIPT is also supported for back-compat
+    with the standalone voice-lab checkout during transition). The
+    wrapper loads Sayro in its OWN Python process (SAYRO_PYTHON), then
+    shells out to Seed-VC (cwd=SEEDVC_DIR; default third_party/seed-vc)
+    using the persistent V2 batch worker with target-feature caching.
+    BirOvoz never imports Sayro or Seed-VC directly. A module-level Lock
+    serializes all local-clone calls so we never race two model loads on
+    the same GPU. Kazakh is NOT supported in MVP — Route B is Uzbek-only.
 
-Security note: stored out-of-repo config contains a voice_id only —
-never API keys (keys stay in environment). Reference WAV / model files
-live outside the repository; paths come from env.
+Security: stored out-of-repo config contains a voice_id only — never API
+keys (keys stay in environment). Reference WAV / model weights live
+outside the repository; paths come from env.
 """
 
-import io
 import json
 import logging
 import os
@@ -92,55 +91,115 @@ def elevenlabs_configured() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# CP5: local clone — invokes existing voice-lab/b_sayro_then_seedvc.py.
-# The wrapper handles Sayro in-process (speaker="sayro", instruct="Neutral",
-# optional Uzbek normalization) then runs Seed-VC as a subprocess with
-# cwd=SEEDVC_DIR using V1 flags. The product shells out to the wrapper in
-# a per-request temp workspace with a single module-level Lock so we never
-# launch two Sayro model loads concurrently on the same GPU.
+# CP5: local clone — shells out to the vendored services/routeb wrapper.
+# Path resolution order for every Route B artifact:
+#   1. Explicit env var (absolute path) wins.
+#   2. Conventional in-repo default, if it exists on disk:
+#        - wrapper script: services/routeb/b_sayro_then_seedvc.py
+#        - Seed-VC checkout: product/backend/third_party/seed-vc
+#        - Seed-VC venv python: $SEEDVC_DIR/.venv-vc/...
+#        - Sayro venv python: product/backend/.venv-routeb/...
+#   3. Empty string -> feature gracefully disabled (OpenAI fallback).
+# The wrapper runs Sayro in-process and Seed-VC as a persistent
+# subprocess; BirOvoz never imports either model directly. A module-
+# level Lock serializes calls to protect the GPU.
 # ---------------------------------------------------------------------------
 
-def _which(path: str) -> bool:
-    """Return True if `path` points at an existing file (absolute path)
-    or resolves on PATH (bare command). Directories are rejected."""
+_BACKEND_DIR = Path(__file__).resolve().parent.parent  # product/backend
+_VENDORED_WRAPPER = _BACKEND_DIR / "services" / "routeb" / "b_sayro_then_seedvc.py"
+_DEFAULT_SEEDVC_DIR = _BACKEND_DIR / "third_party" / "seed-vc"
+_DEFAULT_SAYRO_VENV = _BACKEND_DIR / ".venv-routeb"
+
+
+def _which(path) -> bool:
+    """Return True if `path` points at an existing executable file
+    (absolute path) or resolves on PATH (bare command)."""
     if not path:
         return False
     p = Path(path)
-    if p.is_absolute():
-        return p.is_file()
-    return shutil.which(path) is not None
+    if not p.is_absolute():
+        return shutil.which(str(p)) is not None
+    return p.is_file()
 
 
-def _resolve_under(root: str, rel: str) -> Path:
-    p = Path(rel)
-    if p.is_absolute() or not root:
+def _candidate_python_exes(venv_dir: Path) -> list:
+    """Return candidate python.exe paths inside a virtualenv (Windows or POSIX)."""
+    return [venv_dir / "Scripts" / "python.exe",
+            venv_dir / "bin" / "python"]
+
+
+def _resolve_seedvc_dir() -> Path:
+    """SEEDVC_DIR explicit, else conventional third_party/seed-vc if it exists."""
+    if settings.seedvc_dir:
+        return Path(settings.seedvc_dir)
+    if _DEFAULT_SEEDVC_DIR.is_dir():
+        return _DEFAULT_SEEDVC_DIR
+    return None
+
+
+def _resolve_seedvc_python(seedvc_dir: Path) -> str:
+    if settings.seedvc_python:
+        return settings.seedvc_python
+    if seedvc_dir is not None:
+        for cand in _candidate_python_exes(seedvc_dir / ".venv-vc"):
+            if cand.is_file():
+                return str(cand)
+    return ""
+
+
+def _resolve_sayro_script() -> Path:
+    """Absolute path to the Route B wrapper script."""
+    if settings.sayro_script:
+        p = Path(settings.sayro_script)
+        if p.is_absolute():
+            return p
+        if settings.sayro_voice_lab_dir:
+            return Path(settings.sayro_voice_lab_dir) / p
         return p
-    return Path(root) / rel
+    return _VENDORED_WRAPPER if _VENDORED_WRAPPER.is_file() else None
+
+
+def _resolve_sayro_python(script_path: Path) -> str:
+    if settings.sayro_python:
+        return settings.sayro_python
+    # Convention: .venv-routeb next to backend.
+    for cand in _candidate_python_exes(_DEFAULT_SAYRO_VENV):
+        if cand.is_file():
+            return str(cand)
+    return ""
+
+
+def _resolve_wrapper_cwd(script_path: Path) -> Path:
+    """cwd for the wrapper subprocess: the directory containing the script
+    so `from common import …` (via sys.path.insert(0, dirname(__file__)))
+    resolves regardless of where the backend was started from."""
+    if settings.sayro_voice_lab_dir:
+        return Path(settings.sayro_voice_lab_dir)
+    return script_path.parent if script_path else None
 
 
 def seedvc_configured() -> bool:
-    """Seed-VC is usable iff SEEDVC_PYTHON resolves and SEEDVC_DIR exists
-    and the reference WAV exists. The wrapper picks inference.py and all
-    V1 flags internally."""
-    py = settings.seedvc_python
-    sd = settings.seedvc_dir
+    """Seed-VC is usable iff SEEDVC_DIR resolves to an existing checkout,
+    SEEDVC_PYTHON resolves to an existing python, and the reference WAV exists."""
+    sd = _resolve_seedvc_dir()
+    py = _resolve_seedvc_python(sd) if sd is not None else ""
     ref = settings.seedvc_reference_wav
-    if not (py and sd and ref):
+    if not (sd and py and ref):
         return False
-    ref_path = Path(ref)
-    return _which(py) and Path(sd).is_dir() and ref_path.is_file()
+    return _which(py) and sd.is_dir() and Path(ref).is_file()
 
 
 def sayro_configured() -> bool:
     """The Route B wrapper is usable iff SAYRO_PYTHON + the wrapper script
     resolve AND Seed-VC is configured (the wrapper shells out to Seed-VC
     internally)."""
-    py = settings.sayro_python
-    script = settings.sayro_script
-    if not (py and script):
+    script = _resolve_sayro_script()
+    if script is None or not script.is_file():
         return False
-    script_path = _resolve_under(settings.sayro_voice_lab_dir, script)
-    return _which(py) and script_path.is_file() and seedvc_configured()
+    py = _resolve_sayro_python(script)
+    if not _which(py):
+        return False
+    return seedvc_configured()
 
 
 def local_clone_configured() -> bool:
@@ -194,9 +253,12 @@ def set_provider(provider: str) -> None:
         )
     if p == "local-clone" and not local_clone_configured():
         raise ValueError(
-            "Local clone is not configured: point SAYRO_PYTHON / SAYRO_SCRIPT / "
-            "SAYRO_VOICE_LAB_DIR at the out-of-repo voice-lab Route B wrapper "
-            "and SEEDVC_PYTHON / SEEDVC_DIR / SEEDVC_REFERENCE_WAV at Seed-VC."
+            "Local clone is not configured: set SEEDVC_REFERENCE_WAV to your "
+            "reference WAV and ensure the vendored wrapper at "
+            "services/routeb/b_sayro_then_seedvc.py plus a Seed-VC checkout "
+            "(third_party/seed-vc or SEEDVC_DIR) with a working .venv-vc are "
+            "available. You can also point SAYRO_PYTHON / SAYRO_SCRIPT / "
+            "SAYRO_VOICE_LAB_DIR at an external voice-lab checkout for dev."
         )
     global _active_provider
     with _lock:
@@ -256,6 +318,10 @@ def status() -> dict:
             "languages": ["uz"],  # MVP: Uzbek only
             "busy": _local_clone_busy,
             "model": "sayro-seedvc",
+            "seedvc_version": settings.seedvc_version,
+            "diffusion_steps": settings.route_b_diffusion_steps,
+            "wrapper_script": str(_resolve_sayro_script()) if _resolve_sayro_script() else None,
+            "seedvc_dir": str(_resolve_seedvc_dir()) if _resolve_seedvc_dir() else None,
         },
         "fallback": "openai",
     }
@@ -360,12 +426,13 @@ def _parse_wrapper_markers(line: str, timings: dict, markers: dict) -> None:
     """Parse one line of wrapper stdout, updating timings/markers in place.
 
     We record wall-clock deltas from subprocess start for each stage:
+      - wrapper_start_t   (implicit; set by caller)
       - sayro_load_s      (from "[B] loaded in Xs" — Sayro model load)
       - sayro_out         (from "[B] t01 -> <path>" — Sayro wrote TTS wav)
-      - sayro_done_s      (from "[B] Sayro stage done" — Sayro fully done)
+      - sayro_done_t      (from "[B] Sayro stage done" — Sayro fully done)
       - vc_out            (from "[B][vc] t01.wav -> <path>" — Seed-VC wrote
                           converted wav; <path> is relative to --out dir)
-      - convert_done_s    (from "[B] convert stage done" — wrapper exiting)
+      - convert_done_t    (from "[B] convert stage done" — wrapper exiting)
     """
     m = _R_LOADED.search(line)
     if m and "sayro_load_s" not in timings:
@@ -413,10 +480,6 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
         timings:      parsed per-stage timing dict (see _parse_wrapper_markers)
         markers:      parsed marker dict (vc_out path, sayro_out path, peak gpu)
         total_s:      wall-clock seconds inside subprocess
-
-    Legacy callers/monkeypatches that returned None are tolerated by the
-    caller (synthesize_local_clone treats a non-dict return as "no timing
-    data"), but _run_subprocess itself always returns a dict.
     """
     logger.debug("local-clone subprocess: cwd=%s argv=%s",
                  cwd or os.getcwd(),
@@ -427,23 +490,25 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
     out_tail: list[str] = []
     err_tail: list[str] = []
     proc = None
-    popen_kwargs = dict(
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.DEVNULL,
-        env=_build_child_env(),
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        bufsize=1,  # line-buffered for real-time parsing
-    )
-    # On POSIX, put the child in its own process group so os.killpg()
-    # can terminate the entire tree (wrapper + Seed-VC grandchild) on
-    # timeout. On Windows we use taskkill /T /F instead.
-    if os.name != "nt":
-        popen_kwargs["start_new_session"] = True
     try:
+        popen_kwargs = dict(
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            env=_build_child_env(),
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,  # line-buffered for real-time parsing
+        )
+        # On POSIX, put the child in its own process group so
+        # os.killpg() can terminate the entire tree (wrapper + Seed-VC
+        # grandchild) on timeout. On Windows CREATE_NEW_PROCESS_GROUP
+        # does NOT help us (taskkill /T /F is what actually works), so
+        # we leave it off.
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
         proc = subprocess.Popen(cmd, **popen_kwargs)
     except FileNotFoundError as e:
         raise RuntimeError(f"local-clone executable not found: {cmd[0]}") from e
@@ -452,8 +517,11 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
     # synchronously in the main thread would block forever when the
     # child is alive but silent (e.g. during a long GPU inference with
     # no output), preventing proc.wait() from ever being reached and
-    # making the timeout unreachable.
-    def _drain(pipe, tail, is_stdout: bool) -> None:
+    # making the timeout unreachable. Using threads lets the main loop
+    # poll for exit OR timeout while lines are streamed in real time.
+    out_chunks: list[str] = []
+    err_chunks: list[str] = []
+    def _drain(pipe, tail, chunks, is_stdout: bool) -> None:
         try:
             for raw in pipe:
                 line = raw.rstrip("\r\n")
@@ -461,6 +529,7 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
                     tail.append(line)
                     while len(tail) > 5:
                         tail.pop(0)
+                    chunks.append(line)
                     if is_stdout:
                         logger.debug("route-b: %s", line)
                         _parse_wrapper_markers(line, timings, markers)
@@ -468,10 +537,12 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
             pass
     assert proc.stdout is not None and proc.stderr is not None
     out_thread = threading.Thread(
-        target=_drain, args=(proc.stdout, out_tail, True), daemon=True,
+        target=_drain, args=(proc.stdout, out_tail, out_chunks, True),
+        daemon=True,
     )
     err_thread = threading.Thread(
-        target=_drain, args=(proc.stderr, err_tail, False), daemon=True,
+        target=_drain, args=(proc.stderr, err_tail, err_chunks, False),
+        daemon=True,
     )
     out_thread.start()
     err_thread.start()
@@ -479,6 +550,9 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
     deadline = t0 + timeout
     killed = False
     try:
+        # Poll until the process exits or we exceed the deadline. The
+        # drain threads keep streaming lines into timings/markers
+        # concurrently; nothing blocks on pipe I/O in the main loop.
         while True:
             if proc.poll() is not None:
                 break
@@ -487,8 +561,9 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
                 # Kill the whole process tree on timeout. On Windows
                 # terminate() kills only the parent; taskkill /T /F is
                 # the reliable way to kill the child python.exe and its
-                # Seed-VC grandchild. On POSIX os.killpg terminates the
-                # process group we created via start_new_session=True.
+                # Seed-VC grandchild. On POSIX start_new_session=True
+                # puts the child in its own process group so os.killpg
+                # terminates everything (e.g. Seed-VC grandchildren).
                 try:
                     if os.name == "nt":
                         subprocess.run(
@@ -504,6 +579,7 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
                     pass
                 break
             time.sleep(0.05)
+        # Wait for drain threads to flush final lines after exit/kill.
         out_thread.join(timeout=3.0)
         err_thread.join(timeout=3.0)
         try:
@@ -511,6 +587,8 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
         except Exception:
             pass
     except BaseException:
+        # On any unexpected exception, make sure the child does not
+        # outlive us.
         try:
             if proc.poll() is None:
                 try:
@@ -528,16 +606,14 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
             pass
         raise
 
+    if killed:
+        raise RuntimeError(
+            f"local-clone subprocess timed out after {timeout}s: {cmd[0]}"
+        )
+
     total_s = time.monotonic() - t0
     timings["total_s"] = round(total_s, 3)
     timings.pop("_t0", None)
-
-    if killed:
-        tail_src = err_tail if err_tail else out_tail
-        raise RuntimeError(
-            f"local-clone subprocess timed out after {timeout}s: {cmd[0]}"
-            + ((" | " + " | ".join(tail_src[-3:])) if tail_src else "")
-        )
 
     if proc.returncode != 0:
         tail_src = err_tail if err_tail else out_tail
@@ -566,20 +642,31 @@ def _run_subprocess(cmd: list, timeout: int, cwd: str = None) -> dict:
 
 def _find_converted_output(out_dir: Path, source_stem: str) -> Path:
     """Route B wrapper delegates to Seed-VC V1 inference.py, which writes
-    one WAV per source file into --output. We return the newest WAV under
-    out_dir (robust to V1 writing <source_stem>.wav vs V2 adding suffixes).
-    This is a fallback used only when the wrapper did not emit the
-    "[B][vc] ... -> <relpath>" marker (older wrapper / log drift)."""
-    candidates = sorted(
-        [p for p in out_dir.rglob("*.wav") if p.is_file()],
-        key=lambda p: p.stat().st_mtime, reverse=True,
-    )
-    if candidates:
-        return candidates[0]
-    raise RuntimeError(
-        f"Route B produced no converted WAV under {out_dir} "
-        f"(source_stem={source_stem})"
-    )
+    one WAV per source file into --output. The wrapper emits Sayro's raw
+    TTS WAV under a directory like out/<stage>/<stem>.wav and the final
+    Seed-VC-converted WAV under out/<stage>_vc/<stem>.wav (per the real
+    b_sayro_then_seedvc.py output layout observed on Windows:
+    out/b_sayro/t01.wav -> out/b_sayro_vc/t01.wav). We prefer WAVs whose
+    immediate parent directory name ends with '_vc' (the Seed-VC
+    conversion stage); ties fall back to newest-by-mtime. This prevents
+    picking up Sayro-raw WAVs or intermediate artifacts when Seed-VC
+    output is present."""
+    candidates = [p for p in out_dir.rglob("*.wav") if p.is_file()]
+    if not candidates:
+        raise RuntimeError(
+            f"Route B produced no converted WAV under {out_dir} "
+            f"(source_stem={source_stem})"
+        )
+    def _score(p: Path):
+        parent_name = p.parent.name
+        is_vc_output = parent_name.endswith("_vc")
+        # Score tuple (higher picked first): prefer _vc dir, then newest
+        # mtime. Newest-only is unsafe when filesystem timestamp
+        # granularity (e.g. FAT/network shares ~10 ms) makes the Sayro
+        # intermediate and Seed-VC output appear to share an mtime.
+        return (1 if is_vc_output else 0, p.stat().st_mtime)
+    candidates.sort(key=_score, reverse=True)
+    return candidates[0]
 
 
 def _split_extra(extra: str) -> list:
@@ -600,68 +687,167 @@ def _format_numbered_sentence(num: int, text: str) -> str:
 
 
 def _build_route_b_cmd(sentences_file: Path, out_dir: Path) -> list:
-    """Build the argv list for the real voice-lab Route B wrapper CLI.
+    """Build the argv list for the Route B wrapper CLI.
 
-    The wrapper expects:
-      --stage all        run Sayro TTS then Seed-VC end-to-end
-      --sentences <file> numbered-sentences FILE (parse_numbered format:
-                         lines matching \"^\\d+[.)]\\s*(.+)$\"; comments '#' and
-                         blanks skipped); --only <N> selects by numeric id
-      --only 1           only process utterance #1 (one per request)
-      --out <dir>        output directory for converted WAV(s)
-      --target <ref.wav> Seed-VC reference voice target
-      --seedvc-python <py>  Python exe in the Seed-VC venv
-      --seedvc-dir <dir>    Seed-VC checkout (wrapper uses as cwd)
-      --seedvc-version v1   Use Seed-VC V1 inference.py
+    The wrapper (vendored at services/routeb/b_sayro_then_seedvc.py) expects:
+      --stage all          run Sayro TTS then Seed-VC end-to-end
+      --sentences <file>   numbered-sentences FILE (parse_numbered format)
+      --only <N>           select numeric ids (we always pass "1")
+      --out <dir>          output directory for converted WAV(s)
+      --target <ref.wav>   Seed-VC reference voice target
+      --seedvc-python <py> Python exe in the Seed-VC venv
+      --seedvc-dir <dir>   Seed-VC checkout (wrapper uses as cwd for Seed-VC)
+      --seedvc-version v2  Use Seed-VC V2 persistent batch inference
+      --diffusion-steps N  Quality knob (default 15)
+      --intelligibility / --similarity (default 0.8 each — matching the
+        74.86s/5-sentence production benchmark)
 
     We write exactly one numbered sentence into a per-request temp
-    sentences FILE, then run --stage all --only 1 against it. Any extra
+    sentences file, run --stage all --only 1 against it. Any extra
     operator tokens from ROUTE_B_EXTRA_ARGS are appended verbatim
     (shlex-split) so wrapper-side flag additions don't require code
     changes in BirOvoz.
     """
-    script_path = _resolve_under(settings.sayro_voice_lab_dir,
-                                 settings.sayro_script)
+    script_path = _resolve_sayro_script()
+    seedvc_dir = _resolve_seedvc_dir()
+    seedvc_py = _resolve_seedvc_python(seedvc_dir)
+    sayro_py = _resolve_sayro_python(script_path)
     ref_path = Path(settings.seedvc_reference_wav)
 
+    version = (settings.seedvc_version or "v2").strip().lower()
     cmd = [
-        settings.sayro_python,
+        sayro_py,
         str(script_path),
         "--stage", "all",
         "--sentences", str(sentences_file),
         "--only", "1",
         "--out", str(out_dir),
         "--target", str(ref_path),
-        "--seedvc-python", settings.seedvc_python,
-        "--seedvc-dir", settings.seedvc_dir,
-        "--seedvc-version", "v1",
+        "--seedvc-python", seedvc_py,
+        "--seedvc-dir", str(seedvc_dir),
+        "--seedvc-version", version,
+        "--diffusion-steps", str(settings.route_b_diffusion_steps),
+        "--intelligibility", str(settings.route_b_intelligibility),
+        "--similarity", str(settings.route_b_similarity),
     ]
+    # V1-only flags (the V2 path ignores them; we only add them for V1 so
+    # V2 CLI warnings don't drift into stderr if the wrapper tightens arg
+    # parsing in future).
+    if version == "v1":
+        cmd += ["--inference-cfg", "0.8", "--auto-f0", "False", "--fp16", "True"]
     cmd += _split_extra(settings.route_b_extra_args)
     return cmd
 
 
+def _route_b_cwd() -> Path:
+    """cwd for the wrapper subprocess (see _resolve_wrapper_cwd)."""
+    script = _resolve_sayro_script()
+    return _resolve_wrapper_cwd(script)
+
+
+# WAVE format tags we accept for the local-clone return path. The stdlib
+# wave module only understands PCM integer (format 1); Seed-VC V1 on
+# Windows emits 32-bit IEEE float PCM (format 3, pcm_f32le) at 22050 Hz
+# mono, which is a perfectly playable WAV in every browser we support.
+_WAVE_FORMAT_PCM = 1
+_WAVE_FORMAT_IEEE_FLOAT = 3
+
+
+def _validate_wav_bytes(data: bytes) -> None:
+    """Validate a RIFF/WAVE container enough to ensure the browser can
+    play it. Accepts PCM integer (format 1) and IEEE float (format 3);
+    rejects truncated files, missing fmt/data chunks, zero-length audio,
+    or non-WAVE containers. Raises RuntimeError with a diagnostic
+    message on failure.
+
+    We intentionally do NOT resample or coerce the bit depth here — the
+    <audio> element decodes pcm_s16le and pcm_f32le at any standard rate
+    natively.
+    """
+    if len(data) < 44:
+        raise RuntimeError(
+            f"Converted WAV is too small ({len(data)} bytes) to be a valid WAV"
+        )
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise RuntimeError(
+            "Converted audio is not a RIFF/WAVE file (bad header magic)"
+        )
+    # Walk RIFF chunks after the 12-byte master header.
+    pos = 12
+    end = len(data)
+    fmt_found = False
+    data_size = 0
+    while pos + 8 <= end:
+        cid = data[pos:pos + 4]
+        try:
+            (csize,) = struct.unpack("<I", data[pos + 4:pos + 8])
+        except struct.error:
+            break
+        body_start = pos + 8
+        body_end = body_start + csize
+        if body_end > end:
+            break
+        if cid == b"fmt ":
+            if csize < 14:
+                raise RuntimeError("Converted WAV has a truncated fmt chunk")
+            try:
+                format_tag, channels, sample_rate, byte_rate, block_align, \
+                    bits_per_sample = struct.unpack(
+                        "<HHIIHH", data[body_start:body_start + 16]
+                    )
+            except struct.error as e:
+                raise RuntimeError(f"Converted WAV fmt chunk is unreadable: {e}") from e
+            if format_tag not in (_WAVE_FORMAT_PCM, _WAVE_FORMAT_IEEE_FLOAT):
+                raise RuntimeError(
+                    f"Converted WAV uses unsupported WAVE format tag {format_tag} "
+                    f"(expected {_WAVE_FORMAT_PCM}=PCM int or "
+                    f"{_WAVE_FORMAT_IEEE_FLOAT}=IEEE float)"
+                )
+            if channels < 1 or channels > 2:
+                raise RuntimeError(
+                    f"Converted WAV has unsupported channel count {channels}"
+                )
+            if sample_rate < 8000 or sample_rate > 192000:
+                raise RuntimeError(
+                    f"Converted WAV has implausible sample rate {sample_rate}"
+                )
+            if bits_per_sample not in (8, 16, 24, 32):
+                raise RuntimeError(
+                    f"Converted WAV has unsupported bits-per-sample {bits_per_sample}"
+                )
+            fmt_found = True
+        elif cid == b"data":
+            data_size = csize
+        pos = body_end + (csize & 1)  # chunks are padded to 2-byte boundary
+    if not fmt_found:
+        raise RuntimeError("Converted WAV is missing a fmt chunk")
+    if data_size <= 0:
+        raise RuntimeError("Converted WAV has an empty data chunk (zero frames)")
+
+
 def synthesize_local_clone(text: str, language: str) -> bytes:
-    """CP5: invoke the voice-lab Route B wrapper (Sayro -> Seed-VC) for a
+    """CP5: invoke the vendored Route B wrapper (Sayro -> Seed-VC v2) for a
     single utterance, return converted WAV bytes.
 
-    Per request we create a temp workspace with a numbered-sentences FILE
-    (one line "1. <text>" matching voice-lab's parse_numbered()) and an
-    output directory. The wrapper is invoked with the real CLI:
+    Per request we create a temp workspace with a numbered-sentences file
+    (one line "1. <text>" matching parse_numbered()) and an output
+    directory, then shell out to the wrapper with:
       --stage all --sentences <tmp>/sentences.txt --only 1
       --out <tmp>/out --target … --seedvc-python … --seedvc-dir …
-      --seedvc-version v1
-    with cwd = SAYRO_VOICE_LAB_DIR.
+      --seedvc-version v2 --diffusion-steps <N> --intelligibility 0.8
+      --similarity 0.8
+    with cwd = the directory containing the wrapper script (so its
+    `from common import …` resolves to services/routeb/common.py).
 
-    Serialized process-wide by _local_clone_lock so concurrent DUB3
-    sentences can never load Sayro simultaneously and OOM the GPU.
-    Raises RuntimeError on any failure so tts.synthesize falls back to
-    OpenAI with a truthful report.
+    Serialized process-wide by _local_clone_lock so concurrent calls can
+    never load Sayro simultaneously and OOM the GPU. Raises RuntimeError
+    on any failure so tts.synthesize falls back to OpenAI with a truthful
+    report.
 
     Pre-conditions:
       * local_clone_configured() is True (checked by caller).
       * language == 'uz' (Kazakh stays on OpenAI at the tts.synthesize layer).
     """
-    
     if not text or not text.strip():
         raise RuntimeError("local-clone: empty text")
     if not _local_clone_supported_language(language):
@@ -694,7 +880,10 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
             _local_clone_busy = True
             try:
                 cmd = _build_route_b_cmd(sentences_file, out_dir)
-                cwd = settings.sayro_voice_lab_dir or None
+                cwd = str(_route_b_cwd()) if _route_b_cwd() else None
+                # Avoid mktree round-trip: out_dir already exists from
+                # the mkdir above; _build_route_b_cmd references it.
+                #
                 # Support both the new dict-returning _run_subprocess and
                 # legacy monkeypatches/tests that return None — treat a
                 # non-dict return as "no parsed timing data".
@@ -724,48 +913,14 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         data = converted.read_bytes()
         if not data:
             raise RuntimeError("Route B produced an empty converted WAV")
-        # Validate RIFF/WAVE without rejecting valid IEEE-float PCM (format 3).
-        if len(data) < 44 or data[:4] != b"RIFF" or data[8:12] != b"WAVE":
-            raise RuntimeError("Converted audio is not a valid WAV: missing RIFF/WAVE header")
-
-        fmt_code = None
-        channels = None
-        sample_rate = None
-        bits_per_sample = None
-        data_size = 0
-
-        pos = 12
-        while pos + 8 <= len(data):
-            chunk_id = data[pos:pos + 4]
-            chunk_size = int.from_bytes(data[pos + 4:pos + 8], "little")
-            chunk_start = pos + 8
-            chunk_end = chunk_start + chunk_size
-
-            if chunk_end > len(data):
-                raise RuntimeError("Converted audio is not a valid WAV: truncated chunk")
-
-            if chunk_id == b"fmt " and chunk_size >= 16:
-                fmt_code = int.from_bytes(data[chunk_start:chunk_start + 2], "little")
-                channels = int.from_bytes(data[chunk_start + 2:chunk_start + 4], "little")
-                sample_rate = int.from_bytes(data[chunk_start + 4:chunk_start + 8], "little")
-                bits_per_sample = int.from_bytes(
-                    data[chunk_start + 14:chunk_start + 16], "little"
-                )
-
-            elif chunk_id == b"data":
-                data_size = chunk_size
-
-            pos = chunk_end + (chunk_size & 1)
-
-        if fmt_code not in (1, 3):
-            raise RuntimeError(
-                f"Converted audio is not supported PCM WAV: format code {fmt_code}"
-            )
-        if not channels or not sample_rate or not bits_per_sample:
-            raise RuntimeError("Converted audio is not a valid WAV: incomplete fmt chunk")
-        if data_size <= 0:
-            raise RuntimeError("Converted WAV has zero audio data")
-
+        # Validate the RIFF/WAVE container (accepts PCM int AND IEEE float,
+        # since Seed-VC V1 on Windows emits pcm_f32le at 22050 Hz which
+        # Python's stdlib wave module cannot parse but browsers can play
+        # natively).
+        try:
+            _validate_wav_bytes(data)
+        except Exception as e:
+            raise RuntimeError(f"Converted audio is not a valid WAV: {e}") from e
         timings = result.get("timings", {})
         timings["lock_wait_s"] = lock_wait_s
         logger.info(

@@ -1,5 +1,5 @@
-"""
-CP5 local-clone tests — voice-lab Route B wrapper integration seam.
+﻿"""
+CP5 local-clone tests â€” voice-lab Route B wrapper integration seam.
 
 No GPU, no network, no real Sayro/Seed-VC environments are ever run. The
 subprocess seam (_run_subprocess) is monkeypatched; a fake WAV is written
@@ -81,7 +81,7 @@ def voice_env(tmp_path, monkeypatch):
 @pytest.fixture()
 def local_configured(voice_env, tmp_path, monkeypatch):
     """Local clone appears fully configured (paths exist; subprocess seam
-    is patched in each test — no real Sayro/Seed-VC ever runs)."""
+    is patched in each test â€” no real Sayro/Seed-VC ever runs)."""
     fake_py = tmp_path / "venv" / "python.exe"
     fake_py.parent.mkdir(parents=True, exist_ok=True)
     fake_py.write_bytes(b"#!python\n"); fake_py.chmod(0o755)
@@ -256,7 +256,7 @@ def test_synthesize_local_clone_happy_path_returns_valid_wav(local_configured, m
     # Real wrapper CLI flags only:
     assert cmd[2:4] == ["--stage", "all"]
     assert "--sentences" in cmd
-    # --sentences points to a FILE path (sentences.txt), not a directory —
+    # --sentences points to a FILE path (sentences.txt), not a directory â€”
     # the real wrapper calls Path(path).read_text() on this argument.
     # We assert this by inspecting what the fake_run saw WHILE the temp
     # workspace was still alive (the temp dir is deleted in finally AFTER
@@ -269,15 +269,17 @@ def test_synthesize_local_clone_happy_path_returns_valid_wav(local_configured, m
     assert info["sentence_file_text"] == "1. Salom dunyo"
     assert info["stage_flag"] == "all"
     assert info["only_flag"] == "1"
-    assert info["seedvc_version"] == "v1"
+    assert info["seedvc_version"] == "v2"
     assert "--out" in cmd
     assert "--target" in cmd and settings.seedvc_reference_wav in cmd
     assert "--seedvc-python" in cmd and settings.seedvc_python in cmd
     assert "--seedvc-dir" in cmd and settings.seedvc_dir in cmd
+    assert cmd[cmd.index("--diffusion-steps") + 1] == "15"
+    assert cmd[cmd.index("--diffusion-steps") + 1] == "15"
     # Flags that are NOT CLI-exposed by the wrapper must NOT be present:
     for forbidden in ("--text", "--output", "--seedvc-script",
                       "--seedvc-reference", "--normalizer",
-                      "--diffusion-steps", "--length-adjust",
+                      "--length-adjust",
                       "--inference-cfg-rate", "--fp16",
                       "--f0-condition", "--auto-f0-adjust", "--semi-tone-shift"):
         assert forbidden not in cmd, f"unexpected flag {forbidden} sent to wrapper"
@@ -289,7 +291,7 @@ def test_synthesize_local_clone_rejects_kazakh(local_configured, monkeypatch):
     _install_route_b_fake(monkeypatch)
     voice_clone.set_provider("local-clone")
     with pytest.raises(RuntimeError, match="Uzbek only"):
-        voice_clone.synthesize_local_clone("Сәлем", "kk")
+        voice_clone.synthesize_local_clone("Ð¡Ó™Ð»ÐµÐ¼", "kk")
 
 
 def test_synthesize_local_clone_missing_output_raises(local_configured, monkeypatch):
@@ -398,7 +400,7 @@ def test_tts_kazakh_stays_on_openai_when_local_selected(local_configured, monkey
     monkeypatch.setattr(voice_clone, "synthesize_local_clone", boom)
     voice_clone.set_provider("local-clone")
     rep = {}
-    out = tts_module.synthesize("Сәлем", "kk", report=rep)
+    out = tts_module.synthesize("Ð¡Ó™Ð»ÐµÐ¼", "kk", report=rep)
     with wave.open(io.BytesIO(out)) as wf:
         assert wf.getnframes() > 0
     assert rep["provider"] == "openai"
@@ -569,13 +571,13 @@ def test_frontend_has_two_chip_ui_and_local_clone_branches():
 
 def test_run_subprocess_decodes_utf8_cyrillic_stderr(tmp_path):
     """Regression for B1: on default Windows cp1252, a child writing
-    Uzbek-Cyrillic UTF-8 to stderr must NOT raise UnicodeDecodeError —
+    Uzbek-Cyrillic UTF-8 to stderr must NOT raise UnicodeDecodeError â€”
     stderr tail is preserved (with replacement chars for invalid bytes)
     and surfaced in the RuntimeError message."""
     script = tmp_path / "cyrillic_err.py"
     script.write_text(
         "import sys\n"
-        "sys.stderr.write('Салом дунё — Seed-VC хато: CUDA out of memory\\n')\n"
+        "sys.stderr.write('Ð¡Ð°Ð»Ð¾Ð¼ Ð´ÑƒÐ½Ñ‘ â€” Seed-VC Ñ…Ð°Ñ‚Ð¾: CUDA out of memory\\n')\n"
         "sys.exit(2)\n",
         encoding="utf-8",
     )
@@ -590,7 +592,7 @@ def test_run_subprocess_decodes_utf8_cyrillic_stderr(tmp_path):
     # The Cyrillic MUST be decoded (not raise UnicodeDecodeError before
     # we can build the error message). With errors="replace", any bytes
     # that are not valid UTF-8 come through as U+FFFD rather than raising.
-    assert "Салом" in msg or "\ufffd" in msg or "Seed-VC" in msg
+    assert "Ð¡Ð°Ð»Ð¾Ð¼" in msg or "\ufffd" in msg or "Seed-VC" in msg
 
 
 def test_run_subprocess_nonzero_exit_includes_tail(tmp_path):
@@ -622,7 +624,7 @@ def test_run_subprocess_nonzero_exit_includes_tail(tmp_path):
 def test_which_rejects_directory_as_python_executable(tmp_path):
     """An absolute path that points at a DIRECTORY (e.g. a user typo
     leaving a trailing backslash) must NOT be accepted as a Python
-    executable — otherwise local_clone_configured() would be True and
+    executable â€” otherwise local_clone_configured() would be True and
     subprocess.run would fail with an opaque WinError 193."""
     not_py = tmp_path / "not_python"
     not_py.mkdir()
@@ -671,7 +673,7 @@ def _stream_chat_with_local_failure(monkeypatch, conv="chat-fb", language="uz"):
     """POST a chat-mode stream request while local-clone is selected but
     forced to fail; returns parsed NDJSON events. The final done event's
     provider_info.tts must report openai (fallback), not local-clone."""
-    # Force local-clone selected but synthesize_local_clone always raises —
+    # Force local-clone selected but synthesize_local_clone always raises â€”
     # matches the scenario in test_turn_provider_info_falls_back_on_local_failure
     # but via the STREAMING chat path (non-dub, single part).
     monkeypatch.setattr(voice_clone, "synthesize_local_clone",
@@ -702,7 +704,7 @@ def test_stream_chat_fallback_provider_info_truthful(local_configured, mock_turn
     assert types == ["meta", "part", "done"], types
     done = next(e for e in evs if e["type"] == "done")
     assert done["provider_info"]["mode"] == "chat"
-    # Must NOT claim local-clone — the clone raised and we fell back.
+    # Must NOT claim local-clone â€” the clone raised and we fell back.
     assert done["provider_info"]["tts"].startswith("openai/"), (
         f"expected openai fallback label, got {done['provider_info']['tts']!r}"
     )
@@ -885,9 +887,9 @@ def test_synthesize_uses_markers_to_pick_vc_output(local_configured, monkeypatch
         if out_path is not None:
             (out_path / "b_sayro").mkdir(parents=True, exist_ok=True)
             (out_path / "b_sayro_vc").mkdir(parents=True, exist_ok=True)
-            # Decoy Sayro-raw WAV (should NOT be picked) — very short.
+            # Decoy Sayro-raw WAV (should NOT be picked) â€” very short.
             _write_fake_wav(out_path / "b_sayro" / "t01.wav", seconds=0.05, rate=22050)
-            # Real VC wav — longer, easy to distinguish by length.
+            # Real VC wav â€” longer, easy to distinguish by length.
             _write_fake_wav(out_path / "b_sayro_vc" / "t01.wav", seconds=0.25, rate=22050)
             # Make the decoy NEWER to defeat naive mtime-only scanners.
             now = time.time()
@@ -911,5 +913,8 @@ def test_synthesize_uses_markers_to_pick_vc_output(local_configured, monkeypatch
     assert out == captured["vc_bytes"]
     assert out != captured["sayro_bytes"]
     # Length sanity: 0.25s * 22050Hz * 2 bytes/samp (s16 PCM) + 44-byte
-    # WAV header ≈ 11069 bytes; Sayro decoy ≈ 2249 bytes.
+    # WAV header â‰ˆ 11069 bytes; Sayro decoy â‰ˆ 2249 bytes.
     assert len(out) > 5000, f"VC wav too short ({len(out)} bytes)"
+
+
+
