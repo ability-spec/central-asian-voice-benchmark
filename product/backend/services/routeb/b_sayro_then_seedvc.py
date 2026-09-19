@@ -165,7 +165,8 @@ def find_seedvc_script(seedvc_dir, version):
 
 def seedvc_cmd(script, version, src, target, outdir, args, python=None):
     cmd = [python or sys.executable, str(script), "--source", str(src), "--target", str(target),
-           "--output", str(outdir), "--diffusion-steps", "25", "--length-adjust", "1.0"]
+           "--output", str(outdir), "--diffusion-steps", str(args.diffusion_steps),
+           "--length-adjust", "1.0"]
     if version == "v2":
         cmd += ["--intelligibility-cfg-rate", str(args.intelligibility),
                 "--similarity-cfg-rate", str(args.similarity),
@@ -183,14 +184,14 @@ def seedvc_cmd(script, version, src, target, outdir, args, python=None):
 
 def seedvc_batch_cmd_v2(script, target, source_list_json, args, python=None):
     """Build argv for the persistent-process V2 batch mode. Same quality
-    parameters as the single-source V2 command (25 steps, 0.8/0.8,
+    parameters as the single-source V2 command (configured steps, 0.8/0.8,
     length-adjust 1.0, no style conversion); replaces --source/--output
     with --source-list for multi-source sequential conversion in one
     Python process."""
     cmd = [python or sys.executable, str(script),
            "--source-list", str(source_list_json),
            "--target", str(target),
-           "--diffusion-steps", "25", "--length-adjust", "1.0",
+           "--diffusion-steps", str(args.diffusion_steps), "--length-adjust", "1.0",
            "--intelligibility-cfg-rate", str(args.intelligibility),
            "--similarity-cfg-rate", str(args.similarity),
            "--convert-style", "false",
@@ -328,6 +329,8 @@ def main():
     ap.add_argument("--seedvc-version", choices=["auto", "v1", "v2"], default="auto",
                     help="v1 = lighter (<6 GB), v2 = better, needs ~8 GB")
     ap.add_argument("--target", default=None, help="override Seed-VC target audio")
+    ap.add_argument("--diffusion-steps", type=int, default=25,
+                    help="Seed-VC diffusion steps (BirOvoz passes its configured value)")
     ap.add_argument("--intelligibility", default="0.8", help="V2: higher protects Uzbek phonemes")
     ap.add_argument("--similarity", default="0.8", help="V2: higher sounds more like you")
     ap.add_argument("--inference-cfg", default="0.8", help="V1 overall conversion strength")
