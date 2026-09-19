@@ -12,6 +12,7 @@ Run: python -m pytest tests/test_local_clone.py -v
 
 import io
 import json
+import logging
 import os
 import re as _re
 import shutil
@@ -407,7 +408,7 @@ def test_tts_kazakh_stays_on_openai_when_local_selected(local_configured, monkey
     assert hit["local"] is False
 
 
-def test_local_clone_failure_falls_back_to_mock(local_configured, monkeypatch):
+def test_local_clone_failure_falls_back_to_mock(local_configured, monkeypatch, caplog):
     monkeypatch.setattr(voice_clone, "synthesize_local_clone",
                         lambda t, l: (_ for _ in ()).throw(RuntimeError("gpu oom")))
     voice_clone.set_provider("local-clone")
@@ -416,6 +417,10 @@ def test_local_clone_failure_falls_back_to_mock(local_configured, monkeypatch):
     with wave.open(io.BytesIO(out)) as wf:
         assert wf.getnframes() > 0
     assert rep["provider"] == "openai"
+    assert any(record.levelno == logging.ERROR
+               and "FALLBACK" in record.getMessage()
+               and "gpu oom" in record.getMessage()
+               for record in caplog.records)
 
 
 def test_synthesize_b64_threadlocal_report(local_configured, monkeypatch):

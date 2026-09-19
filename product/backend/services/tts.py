@@ -149,7 +149,8 @@ def synthesize(text: str, language: str, report: Optional[dict] = None) -> bytes
                 _set_last_report(report)
             return data
         except Exception as e:
-            logger.warning("Local clone TTS failed (%s) — falling back to OpenAI", e)
+            logger.error("FALLBACK local-clone -> %s: %s",
+                         "mock" if settings.mock_mode else "openai", e)
 
     if settings.mock_mode:
         _fill_report(report, "openai", settings.tts_model)
