@@ -99,6 +99,12 @@ class Settings:
     route_b_extra_args: str = field(
         default_factory=lambda: os.environ.get("ROUTE_B_EXTRA_ARGS", "")
     )
+    # Vendored wrapper only: reuse Sayro in RAM between requests. Seed-VC
+    # still runs in its existing environment, with Sayro weights off the GPU.
+    route_b_persistent_sayro: bool = field(
+        default_factory=lambda: os.environ.get("ROUTE_B_PERSISTENT_SAYRO", "1").lower()
+        in ("1", "true", "yes")
+    )
     local_clone_timeout_s: int = field(
         default_factory=lambda: int(os.environ.get("LOCAL_CLONE_TIMEOUT_S", "300"))
     )

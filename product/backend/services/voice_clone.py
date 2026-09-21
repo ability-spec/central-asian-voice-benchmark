@@ -26,6 +26,7 @@ keys (keys stay in environment). Reference WAV / model weights live
 outside the repository; paths come from env.
 """
 
+import atexit
 import json
 import logging
 import os
@@ -42,8 +43,18 @@ import uuid
 from pathlib import Path
 
 from product.backend.config import settings
+from product.backend.services.route_b_worker import RouteBWorker
 
 logger = logging.getLogger(__name__)
+_route_b_worker = RouteBWorker()
+
+
+def close_route_b_worker():
+    with _local_clone_lock:
+        _route_b_worker.close()
+
+
+atexit.register(close_route_b_worker)
 
 EL_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 EL_ADD_VOICE_URL = "https://api.elevenlabs.io/v1/voices/add"
@@ -385,27 +396,20 @@ _R_VC_OUT = _re.compile(r"\[B\]\[vc\]\s+(\S+)\s+->\s+(\S+)")
 _R_SAYRO_DONE = _re.compile(r"\[B\]\s+Sayro stage done")
 _R_CONVERT_DONE = _re.compile(r"\[B\]\s+convert stage done")
 
-# Child-process environment overrides. These are intentionally SAFE,
-# quality-neutral, and additive — they do not change numerics, sampling,
-# or model selection; they only prevent thread oversubscription and
-# force I/O flushing so tail logs are available on failure.
+# Existing child environment settings. Keep CPU thread counts fixed for the
+# first persistent-worker comparison; tune them separately using measurements.
 _CHILD_ENV_HARDEN = {
     # Unbuffered stdout/stderr so [B] stage markers flush immediately;
     # also makes tail-log capture on crash/timeout reliable on Windows
     # where Python defaults to block buffering when not on a TTY.
     "PYTHONUNBUFFERED": "1",
-    # Force libgomp / MKL / OpenBLAS to single-threaded BLAS ops. The
-    # wrapper already runs its GPU work in one process; extra CPU threads
-    # thrash a laptop 6-core CPU during tensor prep / audio I/O and can
-    # SLOW DOWN overall latency from contention. This does not touch
-    # CUDA kernel parallelism — only CPU-side BLAS threads.
+    "PYTHONIOENCODING": "utf-8",
+    # Legacy CPU limits, not a guarantee of optimal performance on every CPU.
     "OMP_NUM_THREADS": "1",
     "MKL_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
     "NUMEXPR_NUM_THREADS": "1",
-    # CuDNN benchmark + V8 API: picks fastest cuDNN conv algorithm for
-    # the current input size on the first run; safe, quality-neutral,
-    # and matches what Seed-VC already sets internally in many configs.
+    # Retained legacy flag. This does not enable torch.backends.cudnn.benchmark.
     "TORCH_CUDNN_V8_API_ENABLED": "1",
 }
 
@@ -434,6 +438,13 @@ def _parse_wrapper_markers(line: str, timings: dict, markers: dict) -> None:
                           converted wav; <path> is relative to --out dir)
       - convert_done_t    (from "[B] convert stage done" — wrapper exiting)
     """
+    for name in ("sayro_generation_s", "sayro_offload_s", "seedvc_total_s"):
+        prefix = f"[B] {name}="
+        if line.startswith(prefix):
+            timings[name] = float(line[len(prefix):])
+            return
+    if line.startswith("[B] sayro_cache="):
+        markers["sayro_cache"] = line.split("sayro_cache=", 1)[1].split()[0]
     m = _R_LOADED.search(line)
     if m and "sayro_load_s" not in timings:
         try:
@@ -887,11 +898,18 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
                 # Support both the new dict-returning _run_subprocess and
                 # legacy monkeypatches/tests that return None — treat a
                 # non-dict return as "no parsed timing data".
-                raw = _run_subprocess(
-                    cmd,
-                    timeout=settings.local_clone_timeout_s,
-                    cwd=cwd,
-                )
+                # External wrappers retain their old CLI. Never assume that
+                # a user-supplied script implements our private worker protocol.
+                use_worker = (settings.route_b_persistent_sayro
+                              and Path(cmd[1]).resolve() == _VENDORED_WRAPPER.resolve())
+                if use_worker:
+                    raw = _route_b_worker.run(
+                        cmd, settings.local_clone_timeout_s, cwd,
+                        _build_child_env(), _parse_wrapper_markers)
+                else:
+                    _route_b_worker.close()
+                    raw = _run_subprocess(
+                        cmd, timeout=settings.local_clone_timeout_s, cwd=cwd)
                 if not isinstance(raw, dict):
                     raw = {"timings": {}, "markers": {}, "total_s": 0.0}
                 result = raw
@@ -923,6 +941,12 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
             raise RuntimeError(f"Converted audio is not a valid WAV: {e}") from e
         timings = result.get("timings", {})
         timings["lock_wait_s"] = lock_wait_s
+        logger.info(
+            "Route B stages: sayro_cache=%s acquire_s=%s generation_s=%s "
+            "offload_s=%s seedvc_total_s=%s",
+            result.get("markers", {}).get("sayro_cache", "disabled"),
+            timings.get("sayro_load_s"), timings.get("sayro_generation_s"),
+            timings.get("sayro_offload_s"), timings.get("seedvc_total_s"))
         logger.info(
             "local-clone produced %d byte WAV from %s | lock_wait=%.2fs "
             "total=%.2fs sayro_load=%s sayro_done=%s vc_done=%s peak_gpu=%s",

@@ -39,7 +39,7 @@ SEEDVC_URL = "https://github.com/Plachtaa/seed-vc"
 
 
 # ---------------------------------------------------------------- stage 1: Sayro TTS
-def stage_sayro(args, sentences):
+def stage_sayro(args, sentences, cache=None):
     import torch
     try:
         from uzbek_normalizer import clean_uzbek_text
@@ -53,10 +53,13 @@ def stage_sayro(args, sentences):
     def norm(t):
         return clean_uzbek_text(t) if clean_uzbek_text else " ".join(t.split())
 
-    print(f"[B] loading {SAYRO_ID} (gated — needs 'hf auth login')…")
+    print(f"[B] acquiring {SAYRO_ID} (load or restore cached weights)…")
     t0 = time.time()
     try:
-        model = load_qwen_model(SAYRO_ID, args.device, args.dtype, args.attn)
+        if cache is None:
+            model = load_qwen_model(SAYRO_ID, args.device, args.dtype, args.attn)
+        else:
+            model = cache.acquire(args)
     except Exception as e:
         msg = str(e)
         if any(k in msg.lower() for k in ("401", "403", "gated", "access denied", "not authorized")):
@@ -66,6 +69,10 @@ def stage_sayro(args, sentences):
             print_oom_advice()
         raise
     print(f"[B] loaded in {time.time() - t0:.1f}s")
+    try:
+        torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
 
     out_dir = Path(args.out) / "b_sayro"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -79,6 +86,7 @@ def stage_sayro(args, sentences):
         dict(text=texts, speaker=["sayro"] * len(texts), instruct=["Neutral"] * len(texts)),
         dict(text=texts, speaker="sayro", instruct="Neutral"),
     ]
+    generation_start = time.perf_counter()
     wavs = sr = None
     last_err = None
     for kw in attempts:
@@ -98,6 +106,7 @@ def stage_sayro(args, sentences):
     if len(wavs) != len(sentences):
         raise SystemExit(f"[B] expected {len(sentences)} wavs, got {len(wavs)}")
 
+    print(f"[B] sayro_generation_s={time.perf_counter() - generation_start:.3f}")
     for (num, raw), text, wav in zip(sentences, texts, wavs):
         path = out_dir / f"t{num:02d}.wav"
         write_wav(path, wav, sr)
@@ -109,13 +118,15 @@ def stage_sayro(args, sentences):
         print(f"[B] peak GPU memory: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
     except Exception:
         pass
+    if cache is not None:
+        cache.park()
     del model
     gc.collect()
     try:
         torch.cuda.empty_cache()
     except Exception:
         pass
-    print("[B] Sayro stage done — VRAM released")
+    print("[B] Sayro stage done — model weights released from GPU")
 
 
 # ---------------------------------------------------------------- stage 2: Seed-VC
@@ -311,7 +322,7 @@ def stage_convert(args):
 
 
 # ---------------------------------------------------------------- main
-def main():
+def make_parser():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--stage", choices=["sayro", "convert", "all"], default="all")
@@ -337,8 +348,11 @@ def main():
     ap.add_argument("--auto-f0", default="False", help="V1: True if pitch sounds wrong")
     ap.add_argument("--fp16", default=True, help="V1: --fp16 True")
     ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
+    ap.add_argument("--worker", action="store_true", help="serve private JSON-line requests on stdin")
+    return ap
 
+
+def run(args, cache=None):
     sentences = parse_numbered(args.sentences)
     if args.only:
         want = {int(x) for x in args.only.split(",") if x.strip().isdigit()}
@@ -370,10 +384,25 @@ def main():
         return 0
 
     if args.stage in ("sayro", "all"):
-        stage_sayro(args, sentences)
+        stage_sayro(args, sentences, cache)
     if args.stage in ("convert", "all"):
+        started = time.perf_counter()
         stage_convert(args)
+        print(f"[B] seedvc_total_s={time.perf_counter() - started:.3f}")
     return 0
+
+
+def main():
+    parser = make_parser()
+    args = parser.parse_args()
+    if args.worker:
+        from sayro_cache import SayroCache
+        # Imported only in Sayro's environment. The backend never imports torch.
+        from worker_protocol import serve
+        cache = SayroCache()
+        serve(lambda argv: run(parser.parse_args(argv), cache), cache)
+        return 0
+    return run(args)
 
 
 if __name__ == "__main__":

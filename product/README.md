@@ -76,6 +76,48 @@ Each turn is appended to `logs/turns.jsonl` (relative to the working directory w
 
 Without an `OPENAI_API_KEY`, the backend returns canned transcripts and a pre-generated WAV beep. Use this to test the frontend flow without spending API credits.
 
+## Route B: reuse Sayro between requests
+
+The vendored wrapper now keeps Sayro loaded in a private worker process. After
+each Sayro generation, both the TTS model and its separate speech tokenizer move
+to CPU RAM before Seed-VC starts. The next request restores them to the GPU
+instead of loading the checkpoint again. The first request remains a cold load.
+The reference voice, model, diffusion steps, and generation parameters are unchanged.
+
+This first optimization reuses **Sayro only**. Seed-VC still runs through the
+existing CLI in its own environment on every request; no external fork files are
+modified. Keeping Sayro in RAM requires several GB of additional resident RAM,
+and its CUDA context may retain some GPU memory even while weights are on CPU.
+Use one backend process per GPU, without `--workers` or development auto-reload.
+
+`ROUTE_B_PERSISTENT_SAYRO=1` is the default for the vendored wrapper. An external
+`SAYRO_SCRIPT` retains the original one-shot behavior. To explicitly select the
+vendored wrapper for a Windows test, run from the repository root:
+
+```powershell
+$env:SAYRO_SCRIPT = (Resolve-Path .\product\backend\services\routeb\b_sayro_then_seedvc.py).Path
+$env:ROUTE_B_PERSISTENT_SAYRO = "1"
+.\product\backend\.venv\Scripts\python.exe -m uvicorn product.backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Send the same short utterance twice, waiting for the first audio to finish.
+Do not restart the backend between requests. Expect `sayro_cache=miss` on the
+first request and `sayro_cache=hit` on the second. Logs now report generation,
+CPU offload, and total Seed-VC stage time separately. `acquire_s` means a full
+load on a cache miss or a RAM-to-GPU restore on a cache hit. Seed-VC stage time
+still includes its startup and model loading. Measure actual GPU speed and voice
+quality locally; automated tests use model substitutes and do not establish a
+latency improvement or CUDA compatibility for the installed model version.
+
+Timeouts and failed requests discard the worker; a later request creates a fresh
+one. Normal backend shutdown also closes the worker. The existing TTS fallback
+still applies to a failed request and is logged with `FALLBACK`.
+
+To restore the original lifecycle, stop the backend, set
+`$env:ROUTE_B_PERSISTENT_SAYRO = "0"`, and restart it. No model reinstallation is
+needed. These PowerShell environment overrides affect this terminal session;
+put the chosen values in `product/backend/.env` to retain them for later sessions.
+
 ## Supported languages
 
 | Code | Language | STT model | LLM | TTS |

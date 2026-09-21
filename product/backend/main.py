@@ -98,6 +98,12 @@ async def startup():
         )
 
 
+@app.on_event("shutdown")
+def shutdown():
+    from product.backend.services.voice_clone import close_route_b_worker
+    close_route_b_worker()
+
+
 # --- Main ---
 def main():
     logger.info("Starting server on %s:%s", settings.host, settings.port)
