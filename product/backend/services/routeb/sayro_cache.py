@@ -9,6 +9,23 @@ class SayroCache:
     def __init__(self):
         self.model = None
         self.key = None
+        self.seed_worker = None
+
+    def close_seed_worker(self):
+        if self.seed_worker is not None:
+            self.seed_worker.close()
+            self.seed_worker = None
+
+    def get_seed_worker(self):
+        if self.seed_worker is None:
+            import sys
+            from pathlib import Path
+            sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+            from route_b_worker import RouteBWorker
+            # Inherit the outer wrapper's process group, so the backend's
+            # timeout/shutdown kills BOTH workers and any descendants.
+            self.seed_worker = RouteBWorker(own_process_group=False)
+        return self.seed_worker
 
     def _move(self, device):
         import torch
@@ -45,6 +62,7 @@ class SayroCache:
         print(f"[B] sayro_offload_s={time.perf_counter() - start:.3f}")
 
     def clear(self):
+        self.close_seed_worker()
         self.model = None
         self.key = None
         gc.collect()

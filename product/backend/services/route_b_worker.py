@@ -17,10 +17,11 @@ PREFIX = "BIROVOZ_RESULT "
 class RouteBWorker:
     """Caller holds the local-clone lock for run() and close()."""
 
-    def __init__(self):
+    def __init__(self, own_process_group=True):
         self.proc = None
         self.key = None
         self.threads = []
+        self.own_process_group = own_process_group
 
     def close(self):
         proc, self.proc = self.proc, None
@@ -33,11 +34,13 @@ class RouteBWorker:
                 if proc.poll() is None:
                     subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                                    capture_output=True, timeout=5)
-            else:
+            elif self.own_process_group:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
+            elif proc.poll() is None:
+                proc.kill()
         finally:
             if proc.poll() is None:
                 proc.kill()
@@ -53,7 +56,8 @@ class RouteBWorker:
         self.close()
         self.events = queue.Queue()
         self.err_tail = deque(maxlen=5)
-        kwargs = {"start_new_session": True} if os.name != "nt" else {}
+        kwargs = ({"start_new_session": True}
+                  if os.name != "nt" and self.own_process_group else {})
         self.proc = subprocess.Popen(
             cmd[:2] + ["--worker"], cwd=cwd, env=env,
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,

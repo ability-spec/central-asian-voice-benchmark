@@ -24,6 +24,7 @@ Tuning knobs that matter:
 import argparse
 import gc
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -241,7 +242,7 @@ def _collect_and_copy_vc_output(tmp_dir, dest_wav):
     shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
-def stage_convert(args):
+def stage_convert(args, seed_worker=None):
     version, script = find_seedvc_script(args.seedvc_dir, args.seedvc_version)
     # Seed-VC opens "configs/v2/vc_wrapper.yaml" as a CWD-relative path (hardcoded
     # in inference_v2.py), so the subprocess MUST run with cwd = repo root — and
@@ -286,8 +287,18 @@ def stage_convert(args):
         cmd = seedvc_batch_cmd_v2(script, target.resolve(), source_list_path.resolve(),
                                   args, python=py)
         n = len(sources)
-        print(f"[B][vc] launching ONE persistent Seed-VC v2 process for {n} source(s) ...")
-        _run_seedvc_once(cmd, cwd, version)
+        if seed_worker is None:
+            print(f"[B][vc] launching Seed-VC v2 batch process for {n} source(s) ...")
+            _run_seedvc_once(cmd, cwd, version)
+        else:
+            print(f"[B][vc] submitting {n} source(s) to reusable Seed-VC v2 worker ...")
+            # Keep the real CLI argv and its quality parameters. The adapter
+            # imports that same external script without modifying its files.
+            adapter = Path(__file__).resolve().parent / "seedvc_worker.py"
+            worker_cmd = [py, str(adapter), "--inference-script", str(script)] + cmd[2:]
+            seed_worker.run(worker_cmd, args.seedvc_worker_timeout, str(cwd),
+                            dict(os.environ),
+                            lambda line, timings, markers: print(line, flush=True))
         for src in sources:
             tmp = tmp_dirs[src.name]
             _collect_and_copy_vc_output(tmp, vc_dir / src.name)
@@ -349,10 +360,15 @@ def make_parser():
     ap.add_argument("--fp16", default=True, help="V1: --fp16 True")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--worker", action="store_true", help="serve private JSON-line requests on stdin")
+    ap.add_argument("--persistent-seedvc", action="store_true",
+                    help="reuse V2 in RAM inside --worker mode (extra host memory required)")
+    ap.add_argument("--seedvc-worker-timeout", type=float, default=300)
     return ap
 
 
 def run(args, cache=None):
+    if cache is not None and not args.persistent_seedvc:
+        cache.close_seed_worker()
     sentences = parse_numbered(args.sentences)
     if args.only:
         want = {int(x) for x in args.only.split(",") if x.strip().isdigit()}
@@ -387,7 +403,14 @@ def run(args, cache=None):
         stage_sayro(args, sentences, cache)
     if args.stage in ("convert", "all"):
         started = time.perf_counter()
-        stage_convert(args)
+        seed_worker = None
+        if cache is not None and args.persistent_seedvc:
+            version, _ = find_seedvc_script(args.seedvc_dir, args.seedvc_version)
+            if version == "v2":
+                seed_worker = cache.get_seed_worker()
+            else:
+                cache.close_seed_worker()
+        stage_convert(args, seed_worker)
         print(f"[B] seedvc_total_s={time.perf_counter() - started:.3f}")
     return 0
 

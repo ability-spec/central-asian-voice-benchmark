@@ -105,6 +105,11 @@ class Settings:
         default_factory=lambda: os.environ.get("ROUTE_B_PERSISTENT_SAYRO", "1").lower()
         in ("1", "true", "yes")
     )
+    # Opt in after confirming enough CPU RAM for both model sets.
+    route_b_persistent_seedvc: bool = field(
+        default_factory=lambda: os.environ.get("ROUTE_B_PERSISTENT_SEEDVC", "0").lower()
+        in ("1", "true", "yes")
+    )
     local_clone_timeout_s: int = field(
         default_factory=lambda: int(os.environ.get("LOCAL_CLONE_TIMEOUT_S", "300"))
     )

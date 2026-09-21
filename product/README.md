@@ -118,6 +118,50 @@ To restore the original lifecycle, stop the backend, set
 needed. These PowerShell environment overrides affect this terminal session;
 put the chosen values in `product/backend/.env` to retain them for later sessions.
 
+## Optional Seed-VC reuse
+
+`ROUTE_B_PERSISTENT_SEEDVC=1` additionally keeps Seed-VC V2 in a second worker
+using `SEEDVC_PYTHON`. It requires the vendored wrapper and persistent Sayro mode.
+The default is `0` so an existing installation can compare this separately.
+V1 continues to use its original CLI. The Seed-VC checkout is never overwritten:
+the adapter imports the installed `inference_v2.py` and calls its existing
+`load_v2_models(args)` and batch `main(args)` with the same quality arguments.
+Compatibility tests use the project owner's supplied script snapshot under
+`tests/fixtures/seedvc_inference_v2.py`; that snapshot is not used at runtime.
+
+After each conversion, registered model parameters/buffers and tensor caches
+stored directly in module attributes (including list/dict/tuple containers) move
+to CPU before the worker acknowledges completion. Sayro and Seed-VC therefore
+take turns on the GPU. Both model sets remain in host RAM; additional RAM and
+both retained CUDA contexts must fit on the laptop. Arbitrary tensors hidden in
+custom Python objects or external module globals are not managed by the adapter.
+GPU memory consumption and speed must be verified with the installed fork.
+
+Stop the backend before updating, then from the repository root in PowerShell:
+
+```powershell
+git pull --ff-only origin fix/route-b-diffusion-cli
+$env:SAYRO_SCRIPT = (Resolve-Path .\product\backend\services\routeb\b_sayro_then_seedvc.py).Path
+$env:ROUTE_B_PERSISTENT_SAYRO = "1"
+$env:ROUTE_B_PERSISTENT_SEEDVC = "1"
+.\product\backend\.venv\Scripts\python.exe -m uvicorn product.backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Send the same short phrase twice without restarting. Expect both
+`sayro_cache=hit` and `seedvc_cache=hit` on the second request. New logs separate
+`seedvc_acquire_s`, `seedvc_conversion_s` (including reference preprocessing and
+WAV writing), and `seedvc_offload_s`. `seedvc_total_s` includes adapter startup
+on the first request. No first-request or warm-request speedup is guaranteed by
+CPU-only tests; compare measured times and confirm that your voice is preserved.
+
+Failures/timeouts discard both workers through the outer process tree. Existing
+TTS fallback still applies to that failed request. To keep the working Sayro
+optimization but disable Seed-VC reuse, stop the backend, set
+`$env:ROUTE_B_PERSISTENT_SEEDVC = "0"`, and restart. Restart after changing model
+configuration, dependencies or checkpoint files. Compiled graphs are not
+supported by this CPU-offloading adapter. Reference preprocessing remains under
+the external fork's control; this change does not add a new reference cache.
+
 ## Supported languages
 
 | Code | Language | STT model | LLM | TTS |

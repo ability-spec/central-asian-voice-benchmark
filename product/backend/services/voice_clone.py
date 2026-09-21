@@ -438,13 +438,16 @@ def _parse_wrapper_markers(line: str, timings: dict, markers: dict) -> None:
                           converted wav; <path> is relative to --out dir)
       - convert_done_t    (from "[B] convert stage done" — wrapper exiting)
     """
-    for name in ("sayro_generation_s", "sayro_offload_s", "seedvc_total_s"):
+    for name in ("sayro_generation_s", "sayro_offload_s", "seedvc_total_s",
+                 "seedvc_acquire_s", "seedvc_conversion_s", "seedvc_offload_s"):
         prefix = f"[B] {name}="
         if line.startswith(prefix):
             timings[name] = float(line[len(prefix):])
             return
     if line.startswith("[B] sayro_cache="):
         markers["sayro_cache"] = line.split("sayro_cache=", 1)[1].split()[0]
+    if line.startswith("[B] seedvc_cache="):
+        markers["seedvc_cache"] = line.split("seedvc_cache=", 1)[1].split()[0]
     m = _R_LOADED.search(line)
     if m and "sayro_load_s" not in timings:
         try:
@@ -903,6 +906,9 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
                 use_worker = (settings.route_b_persistent_sayro
                               and Path(cmd[1]).resolve() == _VENDORED_WRAPPER.resolve())
                 if use_worker:
+                    if settings.route_b_persistent_seedvc:
+                        cmd += ["--persistent-seedvc", "--seedvc-worker-timeout",
+                                str(settings.local_clone_timeout_s)]
                     raw = _route_b_worker.run(
                         cmd, settings.local_clone_timeout_s, cwd,
                         _build_child_env(), _parse_wrapper_markers)
@@ -943,10 +949,14 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         timings["lock_wait_s"] = lock_wait_s
         logger.info(
             "Route B stages: sayro_cache=%s acquire_s=%s generation_s=%s "
-            "offload_s=%s seedvc_total_s=%s",
+            "offload_s=%s seedvc_total_s=%s seedvc_cache=%s seedvc_acquire_s=%s "
+            "seedvc_conversion_s=%s seedvc_offload_s=%s",
             result.get("markers", {}).get("sayro_cache", "disabled"),
             timings.get("sayro_load_s"), timings.get("sayro_generation_s"),
-            timings.get("sayro_offload_s"), timings.get("seedvc_total_s"))
+            timings.get("sayro_offload_s"), timings.get("seedvc_total_s"),
+            result.get("markers", {}).get("seedvc_cache", "disabled"),
+            timings.get("seedvc_acquire_s"), timings.get("seedvc_conversion_s"),
+            timings.get("seedvc_offload_s"))
         logger.info(
             "local-clone produced %d byte WAV from %s | lock_wait=%.2fs "
             "total=%.2fs sayro_load=%s sayro_done=%s vc_done=%s peak_gpu=%s",
