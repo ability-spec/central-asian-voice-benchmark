@@ -88,6 +88,9 @@ class Settings:
     route_b_diffusion_steps: int = field(
         default_factory=lambda: int(os.environ.get("ROUTE_B_DIFFUSION_STEPS", "15"))
     )
+    route_b_length_adjust: float = field(
+        default_factory=lambda: float(os.environ.get("ROUTE_B_LENGTH_ADJUST", "1.0"))
+    )
     route_b_intelligibility: float = field(
         default_factory=lambda: float(os.environ.get("ROUTE_B_INTELLIGIBILITY", "0.8"))
     )
@@ -98,17 +101,6 @@ class Settings:
     # wrapper flag we don't yet know about is reachable without code changes.
     route_b_extra_args: str = field(
         default_factory=lambda: os.environ.get("ROUTE_B_EXTRA_ARGS", "")
-    )
-    # Vendored wrapper only: reuse Sayro in RAM between requests. Seed-VC
-    # still runs in its existing environment, with Sayro weights off the GPU.
-    route_b_persistent_sayro: bool = field(
-        default_factory=lambda: os.environ.get("ROUTE_B_PERSISTENT_SAYRO", "1").lower()
-        in ("1", "true", "yes")
-    )
-    # Opt in after confirming enough CPU RAM for both model sets.
-    route_b_persistent_seedvc: bool = field(
-        default_factory=lambda: os.environ.get("ROUTE_B_PERSISTENT_SEEDVC", "0").lower()
-        in ("1", "true", "yes")
     )
     local_clone_timeout_s: int = field(
         default_factory=lambda: int(os.environ.get("LOCAL_CLONE_TIMEOUT_S", "300"))

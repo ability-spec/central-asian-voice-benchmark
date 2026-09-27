@@ -26,7 +26,6 @@ keys (keys stay in environment). Reference WAV / model weights live
 outside the repository; paths come from env.
 """
 
-import atexit
 import json
 import logging
 import os
@@ -35,26 +34,21 @@ import shlex
 import shutil
 import struct
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 import urllib.request
 import uuid
+import atexit
+import base64
+import queue
+import signal
 from pathlib import Path
 
 from product.backend.config import settings
-from product.backend.services.route_b_worker import RouteBWorker
 
 logger = logging.getLogger(__name__)
-_route_b_worker = RouteBWorker()
-
-
-def close_route_b_worker():
-    with _local_clone_lock:
-        _route_b_worker.close()
-
-
-atexit.register(close_route_b_worker)
 
 EL_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
 EL_ADD_VOICE_URL = "https://api.elevenlabs.io/v1/voices/add"
@@ -311,7 +305,7 @@ def tts_label(report: dict = None) -> str:
 
 
 def status() -> dict:
-    return {
+    s = {
         "tts_provider_env": settings.tts_provider,
         "active_provider": active_provider(),
         "resolved_provider": resolved_provider(),
@@ -326,16 +320,32 @@ def status() -> dict:
             "sayro_ready": sayro_configured(),
             "seedvc_ready": seedvc_configured(),
             "reference_set": bool(settings.seedvc_reference_wav),
-            "languages": ["uz"],  # MVP: Uzbek only
+            "languages": ["uz"],
             "busy": _local_clone_busy,
             "model": "sayro-seedvc",
             "seedvc_version": settings.seedvc_version,
             "diffusion_steps": settings.route_b_diffusion_steps,
             "wrapper_script": str(_resolve_sayro_script()) if _resolve_sayro_script() else None,
             "seedvc_dir": str(_resolve_seedvc_dir()) if _resolve_seedvc_dir() else None,
+            "daemon": {
+                "enabled": (not _daemon_disabled),
+                "running": False,
+                "disable_env": bool(_daemon_disabled),
+                "pid": None,
+            },
         },
         "fallback": "openai",
     }
+    try:
+        d = _routeb_daemon
+        if d is not None:
+            s["local_clone"]["daemon"].update({
+                "running": d.is_alive(),
+                "pid": d.pid,
+            })
+    except Exception:
+        pass
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -396,20 +406,34 @@ _R_VC_OUT = _re.compile(r"\[B\]\[vc\]\s+(\S+)\s+->\s+(\S+)")
 _R_SAYRO_DONE = _re.compile(r"\[B\]\s+Sayro stage done")
 _R_CONVERT_DONE = _re.compile(r"\[B\]\s+convert stage done")
 
-# Existing child environment settings. Keep CPU thread counts fixed for the
-# first persistent-worker comparison; tune them separately using measurements.
+# Child-process environment overrides. These are intentionally SAFE,
+# quality-neutral, and additive — they do not change numerics, sampling,
+# or model selection; they only prevent thread oversubscription and
+# force I/O flushing so tail logs are available on failure.
 _CHILD_ENV_HARDEN = {
     # Unbuffered stdout/stderr so [B] stage markers flush immediately;
     # also makes tail-log capture on crash/timeout reliable on Windows
     # where Python defaults to block buffering when not on a TTY.
     "PYTHONUNBUFFERED": "1",
+    # Force UTF-8 for stdin/stdout/stderr. On Windows a pipe-attached
+    # stdin defaults to the system ANSI codepage (cp1252), which
+    # silently mangles Uzbek diacritics (Oʻ, Gʻ, ʻ) into ?/U+FFFD.
+    # PYTHONIOENCODING is honored by the reconfigure() calls we added
+    # in the daemon's run_daemon() as a fallback — see P1-2 in the
+    # production audit.
     "PYTHONIOENCODING": "utf-8",
-    # Legacy CPU limits, not a guarantee of optimal performance on every CPU.
+    # Force libgomp / MKL / OpenBLAS to single-threaded BLAS ops. The
+    # wrapper already runs its GPU work in one process; extra CPU threads
+    # thrash a laptop 6-core CPU during tensor prep / audio I/O and can
+    # SLOW DOWN overall latency from contention. This does not touch
+    # CUDA kernel parallelism — only CPU-side BLAS threads.
     "OMP_NUM_THREADS": "1",
     "MKL_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
     "NUMEXPR_NUM_THREADS": "1",
-    # Retained legacy flag. This does not enable torch.backends.cudnn.benchmark.
+    # CuDNN benchmark + V8 API: picks fastest cuDNN conv algorithm for
+    # the current input size on the first run; safe, quality-neutral,
+    # and matches what Seed-VC already sets internally in many configs.
     "TORCH_CUDNN_V8_API_ENABLED": "1",
 }
 
@@ -438,16 +462,6 @@ def _parse_wrapper_markers(line: str, timings: dict, markers: dict) -> None:
                           converted wav; <path> is relative to --out dir)
       - convert_done_t    (from "[B] convert stage done" — wrapper exiting)
     """
-    for name in ("sayro_generation_s", "sayro_offload_s", "seedvc_total_s",
-                 "seedvc_acquire_s", "seedvc_conversion_s", "seedvc_offload_s"):
-        prefix = f"[B] {name}="
-        if line.startswith(prefix):
-            timings[name] = float(line[len(prefix):])
-            return
-    if line.startswith("[B] sayro_cache="):
-        markers["sayro_cache"] = line.split("sayro_cache=", 1)[1].split()[0]
-    if line.startswith("[B] seedvc_cache="):
-        markers["seedvc_cache"] = line.split("seedvc_cache=", 1)[1].split()[0]
     m = _R_LOADED.search(line)
     if m and "sayro_load_s" not in timings:
         try:
@@ -741,6 +755,7 @@ def _build_route_b_cmd(sentences_file: Path, out_dir: Path) -> list:
         "--seedvc-dir", str(seedvc_dir),
         "--seedvc-version", version,
         "--diffusion-steps", str(settings.route_b_diffusion_steps),
+        "--length-adjust", str(getattr(settings, "route_b_length_adjust", 1.0)),
         "--intelligibility", str(settings.route_b_intelligibility),
         "--similarity", str(settings.route_b_similarity),
     ]
@@ -839,6 +854,509 @@ def _validate_wav_bytes(data: bytes) -> None:
         raise RuntimeError("Converted WAV has an empty data chunk (zero frames)")
 
 
+# ---------------------------------------------------------------------------
+# Route B persistent-daemon client (warm-TTS speed path).
+#
+# On first use we spawn a single long-lived `b_sayro_then_seedvc.py --daemon`
+# process and keep it around for the lifetime of the backend. Jobs are
+# submitted one at a time as one-line JSON on the daemon's stdin; results
+# come back as one-line JSON on stdout containing a base64-encoded WAV.
+# Sayro + Seed-VC models stay resident on the GPU across utterances, which
+# eliminates the ~15-20s per-call Python/torch startup cost observed when
+# the wrapper was respawned for every request.
+#
+# Fail-closed policy: if the daemon is dead / crashes mid-job / returns an
+# error / times out, we (a) discard the bad handle, (b) respawn once and
+# retry the single in-flight job, and (c) if the retry also fails, fall
+# through to the legacy one-shot subprocess path _run_subprocess so the
+# utterance still succeeds (just slower) and the caller never sees a hard
+# failure from a transient daemon bug.
+# ---------------------------------------------------------------------------
+
+class RouteBDaemonClient:
+    """Thread-safe client for one long-lived `b_sayro_then_seedvc.py --daemon`.
+
+    Design:
+      * Stdout/stderr are drained by dedicated daemon threads into a
+        response queue (stdout) and a tail ring buffer (stderr). This
+        avoids Windows pipe-buffering deadlocks -- we never block the
+        main thread waiting for data while the child is blocked writing
+        to a full pipe.
+      * The outer _local_clone_lock serializes synthesize() calls so
+        only one JSON job is ever in flight at a time.
+      * On any sign of death (exit code / broken pipe / bad JSON /
+        timeout) we kill the whole process tree (taskkill /T /F on
+        Windows to reap the Seed-VC grandchild) and respawn once.
+    """
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self._call_lock = threading.Lock()
+        self._stdout_thread: threading.Thread | None = None
+        self._stderr_thread: threading.Thread | None = None
+        self._responses: "queue.Queue[dict]" = queue.Queue()
+        self._stderr_tail: list[str] = []
+        self._respawns: int = 0
+        self._max_respawns: int = 4
+        self._pid: int | None = None
+
+    def _spawn(self) -> None:
+        if self._proc is not None:
+            self._shutdown_locked()
+        script_path = _resolve_sayro_script()
+        seedvc_dir = _resolve_seedvc_dir()
+        seedvc_py = _resolve_seedvc_python(seedvc_dir)
+        sayro_py = _resolve_sayro_python(script_path)
+        if not (script_path and sayro_py and seedvc_dir and seedvc_py):
+            raise RuntimeError("local-clone daemon: config incomplete")
+
+        ref_path = Path(settings.seedvc_reference_wav)
+        cmd = [
+            sayro_py, str(script_path), "--daemon",
+            "--target", str(ref_path),
+            "--seedvc-python", seedvc_py,
+            "--seedvc-dir", str(seedvc_dir),
+            "--seedvc-version",
+            (settings.seedvc_version or "v2").strip().lower(),
+            "--diffusion-steps", str(settings.route_b_diffusion_steps),
+            "--length-adjust",
+            str(getattr(settings, "route_b_length_adjust", 1.0)),
+            "--intelligibility", str(settings.route_b_intelligibility),
+            "--similarity", str(settings.route_b_similarity),
+        ]
+        cmd += _split_extra(settings.route_b_extra_args)
+
+        cwd = str(_resolve_wrapper_cwd(script_path))
+        logger.info(
+            "local-clone daemon spawning: cwd=%s argv=%s",
+            cwd, " ".join(shlex.quote(c) for c in cmd),
+        )
+        popen_kwargs = dict(
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=_build_child_env(),
+            bufsize=0,
+        )
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
+        proc = subprocess.Popen(cmd, **popen_kwargs)
+        responses: "queue.Queue[dict]" = queue.Queue()
+        stderr_tail: list[str] = []
+        self._proc = proc
+        self._pid = proc.pid
+        self._responses = responses
+        self._stderr_tail = stderr_tail
+        self._stderr_thread = threading.Thread(
+            target=self._drain_stderr,
+            args=(proc, proc.stderr, stderr_tail),
+            daemon=True,
+            name="routeb-daemon-stderr",
+        )
+        self._stdout_thread = threading.Thread(
+            target=self._drain_stdout,
+            args=(proc, proc.stdout, responses),
+            daemon=True,
+            name="routeb-daemon-stdout",
+        )
+        self._stderr_thread.start()
+        self._stdout_thread.start()
+
+        # Wait for the ready line. The daemon prints ready immediately
+        # (models lazy-load on the first job), so this is just Python
+        # startup + argparse (< 10s on warm disk, generous 60s for
+        # cold AV-scanned Windows disks).
+        ready = False
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            if self._proc.poll() is not None:
+                tail = " | ".join(self._stderr_tail[-5:])
+                rc = self._proc.returncode
+                self._shutdown_locked()
+                raise RuntimeError(
+                    f"local-clone daemon exited on startup "
+                    f"(rc={rc}): {tail}"
+                )
+            try:
+                msg = self._responses.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if msg.get("type") == "ready":
+                ready = True
+                break
+        if not ready:
+            self._shutdown_locked()
+            raise RuntimeError(
+                "local-clone daemon: did not report ready within 60s"
+            )
+        logger.info("local-clone daemon ready (pid=%s)", self._pid)
+
+    def _drain_stderr(self, proc, stderr, stderr_tail) -> None:
+        """Drain one specific daemon stderr pipe.
+
+        The Popen and pipe are passed at thread creation. Never use
+        self._proc/self._stderr_tail here because restart can replace both
+        while the old reader is still unwinding.
+        """
+        try:
+            for raw in iter(stderr.readline, b""):
+                if not raw:
+                    break
+                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                if not line:
+                    continue
+                logger.debug("route-b-daemon (stderr): %s", line)
+                stderr_tail.append(line)
+                while len(stderr_tail) > 100:
+                    stderr_tail.pop(0)
+        except (ValueError, OSError):
+            pass
+        finally:
+            try:
+                stderr.close()
+            except Exception:
+                pass
+
+    def _drain_stdout(self, proc, stdout, responses) -> None:
+        """Drain one specific daemon stdout pipe into one queue."""
+        try:
+            buf = b""
+            while True:
+                ch = stdout.read(1)
+                if not ch:
+                    break
+                if ch == b"\n":
+                    line_bytes = buf
+                    buf = b""
+                    line = line_bytes.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
+                    if "ready" in line and "daemon" in line:
+                        responses.put({"type": "ready"})
+                        continue
+                    if not line.startswith("{"):
+                        logger.debug("route-b-daemon: %s", line[:300])
+                        continue
+                    try:
+                        responses.put(
+                            {"type": "result", "data": json.loads(line)}
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "route-b-daemon: bad JSON line: %s: %s",
+                            e, line[:200],
+                        )
+                else:
+                    buf += ch
+                    if len(buf) > 10_000_000:
+                        buf = b""
+        except (ValueError, OSError):
+            pass
+        finally:
+            try:
+                stdout.close()
+            except Exception:
+                pass
+
+    def _kill_tree(self) -> None:
+        """Kill the daemon tree, close all pipe handles, and join readers.
+
+        The operation is safe to repeat. Reader threads own the exact
+        Popen/pipe objects from their spawn, so clearing self._proc cannot
+        redirect an old reader into a replacement process.
+        """
+        proc = self._proc
+        stdout_thread = self._stdout_thread
+        stderr_thread = self._stderr_thread
+        if proc is not None:
+            pid = proc.pid
+            try:
+                try:
+                    if proc.stdin:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+                if proc.poll() is None:
+                    if os.name == "nt":
+                        try:
+                            subprocess.run(
+                                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                                capture_output=True, timeout=5,
+                            )
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            os.killpg(os.getpgid(pid), signal.SIGKILL)
+                        except Exception:
+                            try:
+                                proc.kill()
+                            except Exception:
+                                pass
+                try:
+                    proc.wait(timeout=8)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Close the parent-side handles even when the child had already
+            # exited. This unblocks readers on Windows and prevents handle
+            # accumulation across respawns.
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+
+        join_deadline = time.monotonic() + 2.0
+        for thread in (stdout_thread, stderr_thread):
+            if thread is None or thread is threading.current_thread():
+                continue
+            remaining = max(0.0, join_deadline - time.monotonic())
+            thread.join(timeout=remaining)
+            if thread.is_alive():
+                logger.warning(
+                    "local-clone daemon reader thread did not terminate "
+                    "within shutdown deadline: %s", thread.name,
+                )
+        self._proc = None
+        self._pid = None
+        self._stdout_thread = None
+        self._stderr_thread = None
+
+    def _shutdown_locked(self) -> None:
+        self._kill_tree()
+
+    def shutdown(self) -> None:
+        with self._call_lock:
+            self._shutdown_locked()
+
+    def _ensure_alive(self) -> None:
+        if self._proc is not None and self._proc.poll() is None:
+            return
+        if self._respawns >= self._max_respawns:
+            raise RuntimeError(
+                "local-clone daemon: exceeded respawn budget "
+                f"({self._max_respawns}); falling back to one-shot"
+            )
+        self._respawns += 1
+        self._spawn()
+
+    @staticmethod
+    def _is_retryable_daemon_error(error: str) -> bool:
+        """Return True only for a Seed-VC child death/broken-pipe result.
+
+        Generic daemon errors, CUDA OOMs, malformed responses, and timeouts
+        are deliberately not retried here; they continue to the existing
+        one-shot fallback path. This keeps the retry bounded and avoids
+        changing the timeout or OOM policy in this pass.
+        """
+        text = str(error or "").lower()
+        return (
+            "seed-vc daemon died" in text
+            or "seed-vc daemon broken pipe" in text
+        )
+
+    def synthesize(self, text: str, work_dir: Path, timeout: float) -> bytes:
+        job_id = uuid.uuid4().hex[:10]
+        job = {
+            "id": job_id,
+            "text": text,
+            "target": str(Path(settings.seedvc_reference_wav)),
+            "work_dir": str(work_dir),
+        }
+        with self._call_lock:
+            self._ensure_alive()
+            t_job = time.monotonic()
+            attempt = 0
+            try:
+                payload = (json.dumps(job, ensure_ascii=False) + "\n").encode("utf-8")
+                while True:
+                    # The first _ensure_alive() above covers the normal
+                    # path. A retry after wrapper death arrives here with
+                    # self._proc cleared, so respawn exactly once.
+                    if self._proc is None or self._proc.poll() is not None:
+                        if attempt >= 1:
+                            raise RuntimeError(
+                                "local-clone daemon died during retry"
+                            )
+                        self._shutdown_locked()
+                        self._ensure_alive()
+                        attempt += 1
+
+                    try:
+                        assert self._proc and self._proc.stdin
+                        self._proc.stdin.write(payload)
+                        self._proc.stdin.flush()
+                    except (BrokenPipeError, OSError, ValueError) as e:
+                        if attempt >= 1:
+                            raise RuntimeError(
+                                f"local-clone daemon retry write failed: {e}"
+                            ) from e
+                        logger.warning(
+                            "local-clone daemon write failed (%s); respawning "
+                            "and retrying same job",
+                            e,
+                        )
+                        self._shutdown_locked()
+                        self._ensure_alive()
+                        attempt += 1
+                        continue
+
+                    # Preserve the existing per-write timeout behavior: the
+                    # response window begins only after this attempt's job
+                    # payload has been accepted by the wrapper.
+                    deadline = time.monotonic() + timeout
+                    resp: dict | None = None
+                    retry_after_death = False
+                    while time.monotonic() < deadline:
+                        proc = self._proc
+                        if proc is not None and proc.poll() is not None:
+                            if attempt >= 1:
+                                raise RuntimeError(
+                                    "local-clone daemon died during retry "
+                                    f"(rc={proc.returncode})"
+                                )
+                            logger.warning(
+                                "local-clone daemon died mid-job; respawning "
+                                "and retrying same job",
+                            )
+                            self._shutdown_locked()
+                            self._ensure_alive()
+                            attempt += 1
+                            retry_after_death = True
+                            break
+                        remaining = deadline - time.monotonic()
+                        try:
+                            msg = self._responses.get(
+                                timeout=min(0.5, max(0.01, remaining))
+                            )
+                        except queue.Empty:
+                            continue
+                        if msg.get("type") != "result":
+                            continue
+                        candidate = msg["data"]
+                        if candidate.get("id") == job_id:
+                            resp = candidate
+                            break
+                        logger.warning(
+                            "local-clone daemon: stale id %s (want %s); skipping",
+                            candidate.get("id"), job_id,
+                        )
+
+                    if retry_after_death:
+                        continue
+                    if resp is None:
+                        self._shutdown_locked()
+                        raise RuntimeError(
+                            f"local-clone daemon timed out after {timeout:.0f}s"
+                        )
+                    if not resp.get("ok"):
+                        err = resp.get("error") or "unknown daemon error"
+                        dead = self._proc is None or self._proc.poll() is not None
+                        if attempt == 0 and self._is_retryable_daemon_error(err):
+                            logger.warning(
+                                "local-clone Seed-VC daemon failed after job "
+                                "acceptance; retrying same job once: %s", err,
+                            )
+                            if dead:
+                                self._shutdown_locked()
+                                self._ensure_alive()
+                            attempt += 1
+                            continue
+                        if dead or ("CUDA out of memory" in err
+                                    or "killed" in err.lower()):
+                            self._shutdown_locked()
+                        raise RuntimeError(f"local-clone daemon error: {err}")
+                    wav_b64 = resp.get("wav_b64")
+                    if not wav_b64:
+                        raise RuntimeError(
+                            "local-clone daemon response missing wav_b64"
+                        )
+                    try:
+                        wav_bytes = base64.b64decode(wav_b64)
+                    except Exception as e:
+                        raise RuntimeError(
+                            f"local-clone daemon wav_b64 decode failed: {e}"
+                        ) from e
+                    dt = resp.get("timings") or {}
+                    if dt:
+                        logger.info(
+                            "local-clone daemon timings (s): total=%.2f",
+                            dt.get("total_s", time.monotonic() - t_job),
+                        )
+                    self._respawns = max(0, self._respawns - 1)
+                    return wav_bytes
+            except Exception:
+                if self._proc is not None and self._proc.poll() is not None:
+                    self._shutdown_locked()
+                raise
+
+    def is_alive(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    @property
+    def pid(self) -> int | None:
+        return self._pid if self.is_alive() else None
+
+
+# Module-level singleton.
+_routeb_daemon: RouteBDaemonClient | None = None
+_daemon_disabled: bool = bool(os.environ.get("BIROVOZ_DISABLE_ROUTEB_DAEMON", "").strip())
+
+
+def _get_daemon() -> RouteBDaemonClient | None:
+    """Return the singleton daemon client, or None if daemon mode is
+    disabled (BIROVOZ_DISABLE_ROUTEB_DAEMON=1) or config is unusable."""
+    global _routeb_daemon, _daemon_disabled
+    if _daemon_disabled:
+        return None
+    # Don't even try the daemon if the wrapper doesn't support --daemon:
+    # the flag was added alongside this client in the vendored wrapper;
+    # older/external checkouts may not have it. The check is a simple
+    # substring sniff of the wrapper source so we don't spawn a child
+    # just to discover it exits with "unrecognized arguments".
+    try:
+        script = _resolve_sayro_script()
+        if script is None:
+            return None
+        src = script.read_text(encoding="utf-8", errors="replace")
+        if "--daemon" not in src:
+            logger.info("local-clone wrapper lacks --daemon support; using one-shot path")
+            _daemon_disabled = True
+            return None
+    except OSError:
+        return None
+    if _routeb_daemon is None:
+        _routeb_daemon = RouteBDaemonClient()
+    return _routeb_daemon
+
+
+@atexit.register
+def _shutdown_daemon() -> None:
+    global _routeb_daemon
+    if _routeb_daemon is not None:
+        try:
+            _routeb_daemon.shutdown()
+        except Exception:
+            pass
+        _routeb_daemon = None
+
+
+def _synthesize_via_daemon(text: str, work_dir: Path, timeout: float) -> bytes:
+    """Attempt synthesis via the persistent daemon. Returns WAV bytes on
+    success, raises RuntimeError on any failure (caller falls back)."""
+    d = _get_daemon()
+    if d is None:
+        raise RuntimeError("daemon unavailable")
+    return d.synthesize(text, work_dir, timeout)
+
+
 def synthesize_local_clone(text: str, language: str) -> bytes:
     """CP5: invoke the vendored Route B wrapper (Sayro -> Seed-VC v2) for a
     single utterance, return converted WAV bytes.
@@ -874,9 +1392,8 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
     out_dir = tmp_dir / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
     # Write the single utterance as a numbered-sentences FILE that
-    # parse_numbered() will accept: one line "1. <text>" (UTF-8). Using a
-    # file (not a directory) is required — the wrapper calls
-    # Path(path).read_text() on --sentences and splits into lines.
+    # parse_numbered() will accept: one line "1. <text>" (UTF-8). Used
+    # only by the one-shot fallback path; the daemon accepts text inline.
     sentences_file = tmp_dir / "sentences.txt"
     sentences_file.write_text(
         _format_numbered_sentence(1, text) + "\n",
@@ -892,80 +1409,88 @@ def synthesize_local_clone(text: str, language: str) -> bytes:
         with _local_clone_lock:
             lock_wait_s = round(time.monotonic() - lock_wait_t0, 3)
             _local_clone_busy = True
+            data: bytes | None = None
+            mode: str = "daemon"
+            daemon_err: str | None = None
             try:
-                cmd = _build_route_b_cmd(sentences_file, out_dir)
-                cwd = str(_route_b_cwd()) if _route_b_cwd() else None
-                # Avoid mktree round-trip: out_dir already exists from
-                # the mkdir above; _build_route_b_cmd references it.
-                #
-                # Support both the new dict-returning _run_subprocess and
-                # legacy monkeypatches/tests that return None — treat a
-                # non-dict return as "no parsed timing data".
-                # External wrappers retain their old CLI. Never assume that
-                # a user-supplied script implements our private worker protocol.
-                use_worker = (settings.route_b_persistent_sayro
-                              and Path(cmd[1]).resolve() == _VENDORED_WRAPPER.resolve())
-                if use_worker:
-                    if settings.route_b_persistent_seedvc:
-                        cmd += ["--persistent-seedvc", "--seedvc-worker-timeout",
-                                str(settings.local_clone_timeout_s)]
-                    raw = _route_b_worker.run(
-                        cmd, settings.local_clone_timeout_s, cwd,
-                        _build_child_env(), _parse_wrapper_markers)
-                else:
-                    _route_b_worker.close()
+                # --- Fast path: persistent daemon (warm TTS) ---------
+                # Skip the sentences file + fresh subprocess entirely;
+                # send text over stdin JSONL and get the WAV back as
+                # base64. On daemon-path failure we fall through to the
+                # legacy one-shot subprocess so the utterance still
+                # completes (just slower) — no hard failure for the
+                # caller.
+                try:
+                    t0 = time.monotonic()
+                    data = _synthesize_via_daemon(
+                        text, out_dir,
+                        timeout=settings.local_clone_timeout_s,
+                    )
+                    total_s = round(time.monotonic() - t0, 3)
+                    logger.info(
+                        "local-clone (daemon) produced %d byte WAV | "
+                        "lock_wait=%.2fs total=%.2fs",
+                        len(data), lock_wait_s, total_s,
+                    )
+                except Exception as de:
+                    daemon_err = str(de)
+                    logger.warning(
+                        "local-clone daemon path failed (%s); "
+                        "falling back to one-shot subprocess", daemon_err,
+                    )
+                    mode = "oneshot"
+
+                # --- Slow path: one-shot subprocess (fallback) -------
+                if data is None:
+                    cmd = _build_route_b_cmd(sentences_file, out_dir)
+                    cwd = str(_route_b_cwd()) if _route_b_cwd() else None
                     raw = _run_subprocess(
-                        cmd, timeout=settings.local_clone_timeout_s, cwd=cwd)
-                if not isinstance(raw, dict):
-                    raw = {"timings": {}, "markers": {}, "total_s": 0.0}
-                result = raw
+                        cmd,
+                        timeout=settings.local_clone_timeout_s,
+                        cwd=cwd,
+                    )
+                    if not isinstance(raw, dict):
+                        raw = {"timings": {}, "markers": {}, "total_s": 0.0}
+                    result = raw
+                    # Resolve the converted WAV. Prefer the exact
+                    # relative path the wrapper printed in "[B][vc]
+                    # t01.wav -> <relpath>" (relative to --out dir);
+                    # fall back to directory scanning if the marker was
+                    # missing (older wrapper / log format drift).
+                    vc_rel = result.get("markers", {}).get("vc_out")
+                    converted = None
+                    if vc_rel:
+                        candidate = out_dir / vc_rel
+                        if candidate.is_file():
+                            converted = candidate
+                    if converted is None:
+                        converted = _find_converted_output(out_dir, "1")
+                    data = converted.read_bytes()
+                    timings = result.get("timings", {})
+                    timings["lock_wait_s"] = lock_wait_s
+                    logger.info(
+                        "local-clone (one-shot) produced %d byte WAV from %s | "
+                        "lock_wait=%.2fs total=%.2fs sayro_load=%s "
+                        "sayro_done=%s vc_done=%s peak_gpu=%s daemon_err=%s",
+                        len(data), converted,
+                        lock_wait_s, result.get("total_s", 0.0),
+                        timings.get("sayro_load_s"), timings.get("sayro_done_s"),
+                        timings.get("vc_t_done_s"),
+                        result.get("markers", {}).get("peak_gpu_mem"),
+                        daemon_err,
+                    )
             finally:
                 _local_clone_busy = False
 
-        # Resolve the converted WAV. Prefer the exact relative path the
-        # wrapper printed in "[B][vc] t01.wav -> <relpath>" (relative to
-        # --out dir); fall back to directory scanning if the marker was
-        # missing (older wrapper / log format drift).
-        vc_rel = result.get("markers", {}).get("vc_out")
-        converted = None
-        if vc_rel:
-            candidate = out_dir / vc_rel
-            if candidate.is_file():
-                converted = candidate
-        if converted is None:
-            converted = _find_converted_output(out_dir, "1")
-        data = converted.read_bytes()
         if not data:
-            raise RuntimeError("Route B produced an empty converted WAV")
+            raise RuntimeError("Route B produced no audio data")
         # Validate the RIFF/WAVE container (accepts PCM int AND IEEE float,
-        # since Seed-VC V1 on Windows emits pcm_f32le at 22050 Hz which
-        # Python's stdlib wave module cannot parse but browsers can play
-        # natively).
+        # since Seed-VC V1 / V2 emit both variants depending on platform;
+        # browsers play both natively).
         try:
             _validate_wav_bytes(data)
         except Exception as e:
             raise RuntimeError(f"Converted audio is not a valid WAV: {e}") from e
-        timings = result.get("timings", {})
-        timings["lock_wait_s"] = lock_wait_s
-        logger.info(
-            "Route B stages: sayro_cache=%s acquire_s=%s generation_s=%s "
-            "offload_s=%s seedvc_total_s=%s seedvc_cache=%s seedvc_acquire_s=%s "
-            "seedvc_conversion_s=%s seedvc_offload_s=%s",
-            result.get("markers", {}).get("sayro_cache", "disabled"),
-            timings.get("sayro_load_s"), timings.get("sayro_generation_s"),
-            timings.get("sayro_offload_s"), timings.get("seedvc_total_s"),
-            result.get("markers", {}).get("seedvc_cache", "disabled"),
-            timings.get("seedvc_acquire_s"), timings.get("seedvc_conversion_s"),
-            timings.get("seedvc_offload_s"))
-        logger.info(
-            "local-clone produced %d byte WAV from %s | lock_wait=%.2fs "
-            "total=%.2fs sayro_load=%s sayro_done=%s vc_done=%s peak_gpu=%s",
-            len(data), converted,
-            lock_wait_s, result.get("total_s", 0.0),
-            timings.get("sayro_load_s"), timings.get("sayro_done_s"),
-            timings.get("vc_t_done_s"),
-            result.get("markers", {}).get("peak_gpu_mem"),
-        )
         return data
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

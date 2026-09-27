@@ -280,7 +280,6 @@ def test_synthesize_local_clone_happy_path_returns_valid_wav(local_configured, m
     # Flags that are NOT CLI-exposed by the wrapper must NOT be present:
     for forbidden in ("--text", "--output", "--seedvc-script",
                       "--seedvc-reference", "--normalizer",
-                      "--length-adjust",
                       "--inference-cfg-rate", "--fp16",
                       "--f0-condition", "--auto-f0-adjust", "--semi-tone-shift"):
         assert forbidden not in cmd, f"unexpected flag {forbidden} sent to wrapper"
