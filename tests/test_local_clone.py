@@ -12,6 +12,7 @@ Run: python -m pytest tests/test_local_clone.py -v
 
 import io
 import json
+import logging
 import os
 import re as _re
 import shutil
@@ -279,7 +280,6 @@ def test_synthesize_local_clone_happy_path_returns_valid_wav(local_configured, m
     # Flags that are NOT CLI-exposed by the wrapper must NOT be present:
     for forbidden in ("--text", "--output", "--seedvc-script",
                       "--seedvc-reference", "--normalizer",
-                      "--length-adjust",
                       "--inference-cfg-rate", "--fp16",
                       "--f0-condition", "--auto-f0-adjust", "--semi-tone-shift"):
         assert forbidden not in cmd, f"unexpected flag {forbidden} sent to wrapper"
@@ -407,7 +407,7 @@ def test_tts_kazakh_stays_on_openai_when_local_selected(local_configured, monkey
     assert hit["local"] is False
 
 
-def test_local_clone_failure_falls_back_to_mock(local_configured, monkeypatch):
+def test_local_clone_failure_falls_back_to_mock(local_configured, monkeypatch, caplog):
     monkeypatch.setattr(voice_clone, "synthesize_local_clone",
                         lambda t, l: (_ for _ in ()).throw(RuntimeError("gpu oom")))
     voice_clone.set_provider("local-clone")
@@ -416,6 +416,10 @@ def test_local_clone_failure_falls_back_to_mock(local_configured, monkeypatch):
     with wave.open(io.BytesIO(out)) as wf:
         assert wf.getnframes() > 0
     assert rep["provider"] == "openai"
+    assert any(record.levelno == logging.ERROR
+               and "FALLBACK" in record.getMessage()
+               and "gpu oom" in record.getMessage()
+               for record in caplog.records)
 
 
 def test_synthesize_b64_threadlocal_report(local_configured, monkeypatch):

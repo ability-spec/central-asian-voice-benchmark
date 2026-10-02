@@ -516,6 +516,10 @@ body{
 .status-hint{
   font-size:0.7rem;color:var(--text-faint);letter-spacing:0.01em;
 }
+.capture-mode{display:block;text-align:center;font-size:0.8rem;color:var(--text-dim);margin-top:14px}
+.capture-mode input{accent-color:var(--amber);margin-right:6px}
+.send-recording{margin-top:10px;padding:9px 18px;border:1px solid var(--amber);border-radius:20px;background:var(--surface);color:var(--amber-lite);font:inherit;font-size:0.8rem;cursor:pointer}
+.send-recording[hidden]{display:none}
 
 /* ── Chat */
 .chat-card{
@@ -841,6 +845,11 @@ body{
     </div>
     <div class="app-reveal" id="voiceStatus" style="text-align:center;font-size:11px;color:var(--text-dim);margin:8px 0 2px;min-height:14px;">Voice service&hellip;</div>
 
+    <label class="capture-mode app-reveal">
+      <input type="checkbox" id="autoSendInput" checked>
+      Auto-send on pause (off = manual recording)
+    </label>
+
     <!-- Mic stage -->
     <div class="mic-stage app-reveal" id="micStage">
       <div class="halo halo-1"></div>
@@ -856,6 +865,7 @@ body{
         <div class="status-main" id="statusMain">Tap the mic — hands-free starts</div>
         <div class="status-timer" id="statusTimer">0:00</div>
         <div class="status-hint" id="statusHint">Tap once to start &middot; tap again to stop</div>
+        <button type="button" class="send-recording" id="sendRecordingBtn" onclick="stopRecording()" hidden>Send recording</button>
       </div>
     </div>
 
@@ -975,6 +985,8 @@ const errorMsg   = $('#errorMsg');
 const progressRing = $('#progressRing');
 const micStage   = $('#micStage');
 const canvas     = $('#waveCanvas');
+const autoSendInput = $('#autoSendInput');
+const sendRecordingBtn = $('#sendRecordingBtn');
 
 /* == VAD-CORE-START == */
 /* Pure, DOM-free VAD + HUD logic. Extracted verbatim by
@@ -1205,6 +1217,7 @@ function onCaptureEvent(ev) {
     captureAction = 'send';
     stopCapture();
   } else if (ev === 'blip-cancel') {
+    stopTimer();
     setState(STATE.LISTENING);
     statusMain.textContent = 'Listening — speak now';
   } else if (ev === 'timeout') {
@@ -1230,7 +1243,7 @@ function beginListening() {
   setState(STATE.LISTENING);
   statusMain.textContent = 'Listening — speak now';
   statusHint.textContent = continuous
-    ? 'Hands-free on · pause ~1 s to send · tap to end'
+    ? 'Pause ~1 s or press Send recording · tap mic to cancel'
     : 'Pause ~1 s to send · or tap to stop';
   startWaveform();
   startVadLoop('capture');
@@ -1571,9 +1584,21 @@ async function startRecording() {
   try {
     await openMic();
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
-    continuous = true;      // DUB4: tapping the mic starts a hands-free session
+    continuous = autoSendInput.checked;
     silentRunMs = 0;
-    beginListening();
+    restartPending = false;
+    captureAction = 'send';
+    noSpeechTimeout = false;
+    if (continuous) {
+      beginListening();
+    } else {
+      // Explicit manual mode never drops or re-arms a capture based on VAD.
+      attachRecorder();
+      setState(STATE.RECORDING);
+      statusHint.textContent = 'Speak, then press Send recording · maximum 30 s';
+      startTimer();
+      startWaveform();
+    }
   } catch (err) {
     releaseMic();
     setState(STATE.IDLE);
@@ -1593,7 +1618,14 @@ function stopCapture() {
 
 /* ── Stop recording (manual tap): stop early and send — DUB1 semantics ── */
 function stopRecording() {
+  if (!mediaRecorder || mediaRecorder.state !== 'recording') return;
+  captureAction = 'send';
+  noSpeechTimeout = false;
+  restartPending = false;
   stopVadLoop();
+  stopTimer();
+  setState(STATE.PROCESSING);
+  statusMain.textContent = 'Preparing recording…';
   stopCapture();
 }
 
@@ -1998,6 +2030,8 @@ const ICONS = {
 };
 
 function setState(s) {
+  autoSendInput.disabled = s !== STATE.IDLE && s !== STATE.ERROR;
+  sendRecordingBtn.hidden = s !== STATE.LISTENING && s !== STATE.RECORDING;
   if (state === s) return;
   state = s;
   micBtn.classList.remove('recording','processing','speaking','error-state');
@@ -2020,7 +2054,7 @@ function setState(s) {
       micIcon.innerHTML = ICONS.mic;
       statusMain.className = 'status-main red';
       statusMain.textContent = 'Listening — speak now';
-      statusHint.textContent = 'Pause ~1 s to send · or tap to stop';
+      statusHint.textContent = 'Pause ~1 s or press Send recording · tap mic to cancel';
       break;
     case STATE.RECORDING:
       micBtn.classList.add('recording');

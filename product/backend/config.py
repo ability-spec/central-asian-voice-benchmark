@@ -88,6 +88,9 @@ class Settings:
     route_b_diffusion_steps: int = field(
         default_factory=lambda: int(os.environ.get("ROUTE_B_DIFFUSION_STEPS", "15"))
     )
+    route_b_length_adjust: float = field(
+        default_factory=lambda: float(os.environ.get("ROUTE_B_LENGTH_ADJUST", "1.0"))
+    )
     route_b_intelligibility: float = field(
         default_factory=lambda: float(os.environ.get("ROUTE_B_INTELLIGIBILITY", "0.8"))
     )
