@@ -688,7 +688,7 @@ def stage_convert(args):
             tmp.mkdir(exist_ok=True)
             cmd = [py, str(script), "--source", str(src.resolve()),
                    "--target", str(target), "--output", str(tmp.resolve()),
-                   "--diffusion-steps", "25", "--length-adjust", "1.0",
+                   "--diffusion-steps", str(args.diffusion_steps), "--length-adjust", str(args.length_adjust),
                    "--inference-cfg-rate", str(args.inference_cfg),
                    "--f0-condition", "False",
                    "--auto-f0-adjust", str(args.auto_f0),
@@ -915,3 +915,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
