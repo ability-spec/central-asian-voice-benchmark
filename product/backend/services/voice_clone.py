@@ -1337,9 +1337,6 @@ def _get_daemon() -> RouteBDaemonClient | None:
     return _routeb_daemon
 
 
-# Compatibility alias for main.py shutdown hook (pre-7cd)
-close_route_b_worker = _shutdown_daemon
-
 @atexit.register
 def _shutdown_daemon() -> None:
     global _routeb_daemon
@@ -1349,6 +1346,10 @@ def _shutdown_daemon() -> None:
         except Exception:
             pass
         _routeb_daemon = None
+
+
+# Define the compatibility alias only after its target exists.
+close_route_b_worker = _shutdown_daemon
 
 
 def _synthesize_via_daemon(text: str, work_dir: Path, timeout: float) -> bytes:
@@ -1575,3 +1576,4 @@ def enroll(sample_files: list, consent: str, name: str = "My voice") -> dict:
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
