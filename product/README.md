@@ -64,6 +64,22 @@ If `mock_mode` is `true`, the `OPENAI_API_KEY` in `.env` is not being read. Chec
 5. The pipeline runs: your speech is transcribed, sent to an LLM, and the response is spoken back.
 6. Continue the conversation — up to 20 turns per session. Reload the page to start a new session.
 
+## Prompted benchmark mode
+
+The **Benchmark a recording** panel is optional and does not change the live
+English-to-Uzbek/Kazakh dubbing loop. Open it from the app screen, choose a
+reference sentence, upload a short recording in the selected target language,
+and click **Run benchmark**. The request uses `POST /api/turn` with
+`reference_text`, so the result card can show the transcript/reference pair,
+WER/CER, stage latency, provider, and an explicit `MOCK` badge when no
+`OPENAI_API_KEY` is configured. The frozen leaderboard is loaded read-only from
+`GET /api/leaderboard`; it is not recomputed in the browser.
+
+The benchmark panel is intentionally upload-based: it makes the reference
+being scored explicit and avoids confusing the English dubbing microphone with
+a target-language benchmark recording. Use the selected language's prompts
+from `GET /api/prompts?language=uz` or `kk`.
+
 ## Logs
 
 Each turn is appended to `logs/turns.jsonl` (relative to the working directory when the server starts):

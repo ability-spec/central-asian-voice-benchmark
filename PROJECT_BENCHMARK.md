@@ -7,8 +7,11 @@ This document records the verified baseline, engineering principles, priorities,
 ## Repository
 
 - GitHub: <https://github.com/ability-spec/central-asian-voice-benchmark>
-- Working tree is at commit `9ea0004` (CP3 HEAD) with uncommitted CP5 local-clone work.
-- **Do not commit or push CP5 changes until explicitly instructed.**
+- Working tree is on the Arena task branch from the October audit baseline.
+- CP3 result-card work, CP4 prompted benchmark/leaderboard UI, and the existing
+  CP5 local-clone integration are present in the checkout.
+- Do not commit models, audio, references, credentials, or external voice-lab
+  files; only source/docs changes belong in this repository.
 
 ## Current verified baseline
 

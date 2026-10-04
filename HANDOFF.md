@@ -1,70 +1,88 @@
-# BirOvoz MVP — Handoff
+# BirOvoz — MVP handoff
 
-## HEAD / branch
-- Workspace: master @ b39acd0 (local; content-duplicate of origin — see note)
-- origin/master: 094092c (CP1 live; pushed from Windows via git-am of b39acd0 patch)
-- NOTE: local b39acd0 and origin 094092c have IDENTICAL trees (verified empty diff).
-  Next commit-bearing step must first export work as patch, then reset local
-  master to origin/master to avoid duplicate history. Do NOT merge.
+## Current state
 
-## Completed checkpoints
-- CP1 reference-scored POST /api/turn — origin 094092c (workspace: b39acd0).
-  reference_text form field; wer/cer/scored + stt/llm/tts/total_ms in response.
-- CP2 read-only data endpoints — IMPLEMENTED, UNCOMMITTED, 29/29 tests green.
-  GET /api/prompts + GET /api/leaderboard (CSV passthrough, zero recompute).
+BirOvoz is a working FastAPI + static HTML voice demo for English speech →
+Uzbek/Kazakh dubbing. The primary flow is DUB1–DUB4: microphone capture,
+English STT, translation, sentence-level TTS, ordered playback, hands-free
+re-listening, barge-in, and NDJSON streaming.
 
-## MVP status
-Done: scored turn API, prompts + leaderboard APIs, pipeline (STT/LLM/TTS + mock),
-GO TEST + mic + chat UI. Pending: frontend result card/upload/leaderboard UI
-(CP3+CP4), real-key live smoke (CP5). No frontend changes made yet.
+The prompted benchmark loop is now complete as an opt-in panel in
+`product/frontend/index.html`:
 
-## Next checkpoint: CP3 frontend core demo loop
-File: product/frontend/index.html ONLY. Add: result card (transcript vs reference,
-WER/CER %, latency, provider, MOCK badge when provider_info.mock_mode), API_BASE
-same-origin fix (no hardcoded 127.0.0.1). Acceptance: page serves, card renders
-from /api/turn JSON shapes, no other files touched, suite still green.
+- choose a frozen Uzbek/Kazakh reference prompt from `GET /api/prompts`;
+- upload a target-language recording;
+- score it through `POST /api/turn` with `reference_text`;
+- see reference vs transcript, WER/CER, stage latency, provider, and a truthful
+  `MOCK` badge;
+- load the frozen read-only leaderboard from `GET /api/leaderboard`.
 
-## API contracts (frozen)
-- POST /api/turn (multipart): audio*, conversation_id*, language* (uz|kk),
-  reference_text (optional, default ""). 200: transcript, response_text, audio
-  (b64 wav), turn_number, language, provider_info{stt,llm,tts,mock_mode},
-  wer|cer (float|null), scored (bool), stt_ms, llm_ms, tts_ms, total_ms.
-  Errors: 400 bad lang/empty audio, 413 oversize/overlong, 429 turn cap (20),
-  422 ffmpeg fail, 502 stage fail. No reference -> scored=false, wer/cer null.
-- GET /api/prompts?language=uz|kk -> {language, prompts:[{id, sentence,
-  duration_s}]} (100 rows, manifest order). 400 bad lang, 422 missing param.
-- GET /api/leaderboard -> {rows:[{model, language, condition, n, wer, cer,
-  p50_ms, p95_ms, ...}]} (12 rows verbatim; empty cells -> null).
+The normal dubbing microphone remains unchanged and does not send benchmark
+references accidentally.
 
 ## Important paths
-- API: product/backend/main.py, models.py, routers/turn.py, routers/data.py,
-  routers/health.py, services/score.py, services/stt.py, services/llm.py,
-  services/tts.py, services/session.py, services/log_jsonl.py
-- UI: product/frontend/index.html (single file, no framework)
-- Data (read-only, never modify): research/phase3a_audio_manifest.csv (200 rows),
-  research/final_benchmark_results.csv (12 rows)
-- Tests: tests/test_product_api.py. Env file: product/backend/.env (gitignored).
-- Patch archive (workspace only, outside repo): /home/user/b39acd0.patch
 
-## Test commands (run from repo root)
-- Full suite: python -m pytest tests/test_product_api.py
-- CP2 only: python -m pytest tests/test_product_api.py -k "prompts or leaderboard"
+- API: `product/backend/main.py`, `product/backend/models.py`,
+  `product/backend/routers/turn.py`, `product/backend/routers/data.py`
+- UI: `product/frontend/index.html` (single file, no framework)
+- Data (read-only): `research/phase3a_audio_manifest.csv`,
+  `research/final_benchmark_results.csv`
+- Tests: `tests/test_product_api.py`, `tests/test_result_card.py`, and the
+  DUB1–DUB4 regression tests
+- Environment: `product/backend/.env` (gitignored)
 
-## Known quirks
-- Mock mode when OPENAI_API_KEY unset: all stages canned, transcript fixed per
-  language. Badge it in UI; never present WER as real when mock_mode is true.
-- Tests stub routers.turn._to_wav (no ffmpeg in sandbox); audio code untouched.
-- Frontend API_BASE hardcoded to http://127.0.0.1:8000 (CP3 fixes it).
-- OpenAI live path untested against openai 3.x — CP5 must verify before UI polish.
-- Sessions in-memory; single uvicorn worker only (cap/history break otherwise).
-- Normaliser quirk (frozen methodology, do not fix): U+2018/U+2019 deleted as
-  punctuation and can split words; scores stay comparable with frozen results.
-- Pushes happen ONLY from the user's Windows machine (no creds in sandbox).
-- Snapshot restores wipe .git/config, so the origin remote + upstream tracking
-  can vanish; re-add with remote add + branch --set-upstream-to if missing.
+## API contracts
 
-## OUT OF SCOPE (never do without explicit order)
-OSS-2, new datasets, fine-tuning/training, new benchmark runs or re-scoring,
-autonomous benchmarking, publication/academic work, Docker/CI/DB/auth/queues,
-multi-worker tuning, committing data/audio (gitignored by design), frontend
-framework rewrite, websockets/streaming, i18n, TurnRequest dead-code cleanup.
+- `POST /api/turn` multipart: `audio`, `conversation_id`, `language`, optional
+  `reference_text`, `mode`, and `source_language`. Returns transcript, reply,
+  base64 WAV, provider info, scoring fields, and stage latency.
+- `POST /api/turn/stream` NDJSON: the live dubbing transport (`meta`, `part`,
+  `done`, `error`).
+- `GET /api/prompts?language=uz|kk`: 100 manifest prompts in order.
+- `GET /api/leaderboard`: frozen aggregate rows, passed through without
+  recomputation.
+
+## Verification
+
+The focused product + frontend + DUB regression run is green:
+
+```bash
+python -m pytest tests/test_product_api.py tests/test_result_card.py \
+  tests/test_frontend_dub4.py tests/test_dub_api.py tests/test_dub2_stream.py \
+  tests/test_dub3.py tests/test_dub4_continuous.py tests/test_dub4_recorder_fix.py -q
+# 103 passed in the current sandbox
+```
+
+The full historical suite also contains Route B tests for an older settings
+shape and async tests that require `pytest-asyncio`; those are documented
+compatibility/test-environment issues, not part of this frontend checkpoint.
+No real-provider inference or benchmark rerun was performed in this sandbox.
+
+## Run locally
+
+```bash
+cd product/backend
+python -m uvicorn product.backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Open `http://127.0.0.1:8000`. Without `OPENAI_API_KEY`, the demo is mock mode;
+the UI labels benchmark results accordingly. For a static frontend on port
+3000, the UI uses the same hostname's backend on port 8000, or pass an explicit
+`?api=https://...` override. The browser frontend does not hard-code a
+loopback API for remote/preview use.
+
+## Known limitations
+
+- Mock mode is deterministic and is not a real accuracy measurement.
+- Live OpenAI and local Route B voice-clone smoke tests still require the
+  owner's provider credentials, model checkpoints, and reference WAV outside
+  this repository.
+- Local clone is Uzbek-only until a Kazakh voice-lab path is verified.
+- Sessions are in-memory; run one uvicorn worker for the demo.
+
+## Out of scope
+
+Do not add datasets, training/fine-tuning, automatic benchmark reruns,
+Docker/CI/DB/auth/queues, a frontend framework rewrite, WebSockets, or copied
+voice-lab/Seed-VC models. Keep model/reference paths and credentials outside the
+repository.
