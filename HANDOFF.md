@@ -53,15 +53,22 @@ python -m pytest tests/test_product_api.py tests/test_result_card.py \
 # 103 passed in the current sandbox
 ```
 
-The full historical suite also contains Route B tests for an older settings
-shape and async tests that require `pytest-asyncio`; those are documented
-compatibility/test-environment issues, not part of this frontend checkpoint.
+The full CPU suite now runs with:
+
+```bash
+python -m pip install -r product/backend/requirements.txt pytest pytest-asyncio httpx jiwer
+python -m pytest tests product/backend/tests -q
+```
+
+The retained offload adapter/cache helpers are tested independently from the
+production `RouteBDaemonClient`. No removed settings are injected. The existing
+GitHub Actions job now runs this complete suite, including product/UI tests.
 No real-provider inference or benchmark rerun was performed in this sandbox.
 
 ## Run locally
 
 ```bash
-cd product/backend
+# From repository root, with the backend virtual environment activated
 python -m uvicorn product.backend.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -86,3 +93,24 @@ Do not add datasets, training/fine-tuning, automatic benchmark reruns,
 Docker/CI/DB/auth/queues, a frontend framework rewrite, WebSockets, or copied
 voice-lab/Seed-VC models. Keep model/reference paths and credentials outside the
 repository.
+
+## Remaining release acceptance on Windows/NVIDIA
+
+Use one backend process and the current `master` plus the reviewed fixes.
+Keep credentials, checkpoints and the reference WAV outside Git.
+
+1. Start from the repository root; open the served UI on port 8000.
+2. With a live provider key, dub a short English phrase into Uzbek, then Kazakh.
+   Confirm the transcript/translation, playable audio, actual provider and absence
+   of an unexpected MOCK result. Local voice clone remains Uzbek-only.
+3. In Uzbek local-clone mode, send two short phrases without restarting.
+   Record first and second request wall time, daemon PID/reuse, peak VRAM and
+   audible voice quality. Current daemon logs differ from the retired offload
+   adapter: do not require `sayro_cache=hit` / `seedvc_cache=hit` markers.
+4. Cancel/barge in during a request; verify no stale audio plays, the next turn
+   works, temporary uploads are eventually removed and shutdown reaps children.
+5. Upload a target-language recording for a frozen benchmark prompt; confirm
+   reference/transcript and WER/CER, then load the frozen leaderboard.
+
+These manual checks are pending. CPU mocks do not establish voice quality,
+GPU compatibility or real latency. A finished demo requires these results.
