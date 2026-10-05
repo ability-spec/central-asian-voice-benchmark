@@ -1,39 +1,39 @@
-# Central Asian AI Voice Benchmark
+# BirOvoz — repository working instructions
 
-## Purpose
-Research benchmark comparing existing AI voice/translation systems for Central Asian languages.
-Not a product. Not a dataset training project. Not a website or API.
+## Current scope
 
-## Language Pairs
-- English → Uzbek
-- English → Kazakh
+This repository contains both a Central Asian voice research benchmark and
+an existing FastAPI/static HTML voice demo under `product/`. The initial
+research-only scope from August is obsolete. Use `HANDOFF.md` for current
+status and `product/README.md` for setup.
 
-## Pipeline Under Test
-STT → Translation → TTS/Dubbing (each step benchmarked independently and end-to-end)
+## Evidence standards
 
-## Evidence Standards
-All capability claims must be labeled one of:
-- **CONFIRMED** — verified by working API call or official documentation
-- **CLAIMED** — provider asserts capability but not yet tested
-- **UNKNOWN** — insufficient evidence
+- **CONFIRMED**: verified by a working call, test, recorded result or official documentation.
+- **CLAIMED**: asserted but not verified in the current environment.
+- **UNKNOWN**: insufficient evidence; do not turn it into a guess.
 
-Never promote UNKNOWN to a guess.
+CPU model substitutes verify orchestration, not real audio quality, GPU
+compatibility or latency. Keep frozen benchmark results separate from demo
+measurements and label mock results truthfully.
 
-## Project Status
-Initial environment audit complete (2026-08-23). No benchmark runs yet.
+## Workflow
 
-## Environment
-- Python 3.14.6 (boto3 not installed — must `pip install boto3` before any Bedrock calls)
-- AWS CLI v2, region us-east-2 (root account)
-- Bedrock accessible; Transcribe/Translate NOT subscribed
-- LiveKit Agents 1.6.6 + livekit-plugins-google installed
-- Google Cloud Speech + TTS SDKs installed (no credentials configured)
-- ElevenLabs SDK installed (no ELEVENLABS_API_KEY)
-- OpenAI SDK installed (no OPENAI_API_KEY)
-- ffmpeg installed
+Inspect current code and reproduce failures before changing the pipeline.
+Make focused fixes, run targeted tests, then the full CPU suite:
 
-## Do Not
-- Build a website or API
-- Train models
-- Generate benchmark audio until test corpus is defined
-- Make product recommendations
+```bash
+python -m pytest tests product/backend/tests -q
+```
+
+The production Route B path uses `RouteBDaemonClient` and `--daemon`.
+The older offload adapter/cache helpers are tested as separate components;
+removed `ROUTE_B_PERSISTENT_*` environment settings have no effect.
+
+## Boundaries
+
+Keep secrets, checkpoints, external model checkouts and voice references out
+of Git. Do not train models, rerun paid benchmarks automatically, replace
+frozen research data, or rewrite the frontend/framework without a concrete
+user request. Use one backend process per GPU. Follow the Windows/provider
+acceptance checklist before declaring the real demo finished.
