@@ -10,6 +10,8 @@ from starlette.datastructures import Headers
 from product.backend.routers import turn
 from product.backend.services import voice_clone
 
+REAL_TO_WAV = turn._to_wav
+
 @pytest.fixture
 def pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(turn.settings, 'upload_dir', tmp_path)
@@ -127,3 +129,23 @@ async def test_ffmpeg_is_reaped_on_cancellation(tmp_path, monkeypatch):
     with pytest.raises(asyncio.CancelledError): await task
     proc.kill.assert_called_once()
     proc.wait.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('stream', [False, True])
+async def test_conversion_timeout_reaps_process_and_removes_uploads(pipeline, monkeypatch, stream):
+    from unittest.mock import AsyncMock, Mock
+    monkeypatch.setattr(turn, '_to_wav', REAL_TO_WAV)
+    monkeypatch.setattr(turn, 'AUDIO_CONVERSION_TIMEOUT_S', .01)
+    async def communicate():
+        await asyncio.Event().wait()
+    proc = Mock(returncode=None, communicate=communicate, wait=AsyncMock())
+    spawn = AsyncMock(return_value=proc)
+    monkeypatch.setattr(turn.asyncio, 'create_subprocess_exec', spawn)
+    with pytest.raises(HTTPException) as exc:
+        await call(stream)
+    assert exc.value.status_code == 422
+    proc.kill.assert_called_once()
+    proc.wait.assert_awaited_once()
+    assert '-nostdin' in spawn.call_args.args
+    assert list(pipeline.iterdir()) == []

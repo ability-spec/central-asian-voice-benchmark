@@ -4,6 +4,8 @@ Central Asian Voice AI — Backend Server (FastAPI).
 Entry point: uvicorn product.backend.main:app
 """
 
+from contextlib import asynccontextmanager
+
 import logging
 import sys
 from pathlib import Path
@@ -44,8 +46,36 @@ logger = logging.getLogger(__name__)
 logger.info(loaded_msg)
 
 
+# --- Application lifecycle ---
+@asynccontextmanager
+async def lifespan(app):
+    # Ensure directories exist
+    settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    settings.audio_output_dir.mkdir(parents=True, exist_ok=True)
+
+    if settings.mock_mode:
+        logger.info(
+            "RUNNING IN MOCK MODE — no OPENAI_API_KEY set. "
+            "All pipeline stages return canned responses."
+        )
+    else:
+        logger.info(
+            "Running with live API keys: "
+            "STT=%s/%s LLM=%s/%s TTS=%s/%s",
+            settings.stt_provider, settings.stt_model,
+            settings.llm_provider, settings.llm_model,
+            settings.tts_provider, settings.tts_model,
+        )
+    try:
+        yield
+    finally:
+        from product.backend.services.voice_clone import close_route_b_worker
+        close_route_b_worker()
+
+
 # --- App ---
 app = FastAPI(
+    lifespan=lifespan,
     title="Central Asian Voice AI",
     description="Voice AI pipeline for Uzbek and Kazakh languages: "
                 "STT → LLM → TTS. DUB1 adds English→uz/kk dubbing mode.",
@@ -74,34 +104,6 @@ if frontend_dir.exists():
     logger.info("Frontend mounted from %s", frontend_dir)
 else:
     logger.warning("Frontend directory not found at %s — serving API only", frontend_dir)
-
-
-# --- Startup ---
-@app.on_event("startup")
-async def startup():
-    # Ensure directories exist
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
-    settings.audio_output_dir.mkdir(parents=True, exist_ok=True)
-
-    if settings.mock_mode:
-        logger.info(
-            "RUNNING IN MOCK MODE — no OPENAI_API_KEY set. "
-            "All pipeline stages return canned responses."
-        )
-    else:
-        logger.info(
-            "Running with live API keys: "
-            "STT=%s/%s LLM=%s/%s TTS=%s/%s",
-            settings.stt_provider, settings.stt_model,
-            settings.llm_provider, settings.llm_model,
-            settings.tts_provider, settings.tts_model,
-        )
-
-
-@app.on_event("shutdown")
-def shutdown():
-    from product.backend.services.voice_clone import close_route_b_worker
-    close_route_b_worker()
 
 
 # --- Main ---

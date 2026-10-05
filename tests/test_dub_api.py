@@ -66,8 +66,14 @@ def client(mock_env):
 
 
 def _wav_bytes(duration_s: float = 0.1) -> bytes:
-    """Minimal fake WAV: 44-byte header + 16 kHz mono s16 payload."""
-    return b"\x00" * 44 + b"\x00" * int(duration_s * 32000)
+    """Valid 16 kHz mono PCM WAV with the requested duration."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b'\0' * (int(duration_s * 16000) * 2))
+    return buffer.getvalue()
 
 
 def _post_turn(client, language="uz", conv="dub-conv", **form):

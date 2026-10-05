@@ -17,6 +17,9 @@ import importlib.util
 import os
 from pathlib import Path
 
+import io
+import wave
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -60,12 +63,14 @@ def client(mock_env):
 
 
 def _wav_bytes(duration_s: float = 0.1) -> bytes:
-    """Minimal fake WAV: 44-byte header + 16 kHz mono s16 payload.
-
-    The router's WAV duration path is pure byte arithmetic
-    ((len - 44) / 32000), so no real audio is needed.
-    """
-    return b"\x00" * 44 + b"\x00" * int(duration_s * 32000)
+    """Valid 16 kHz mono PCM WAV with the requested duration."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, 'wb') as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(b'\0' * (int(duration_s * 16000) * 2))
+    return buffer.getvalue()
 
 
 def _post_turn(client, audio_bytes, language="uz", conv="test-conv", **form):

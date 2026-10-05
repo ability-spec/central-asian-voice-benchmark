@@ -83,3 +83,21 @@ for item in items:
             assert "--fp16" not in argv
     for name in ("t01.wav", "t02.wav"):
         assert (output / "b_sayro_vc" / name).read_bytes() == name.encode()
+
+
+@pytest.mark.parametrize("voice_lab", [False, True])
+def test_relative_wrapper_runs_after_subprocess_changes_directory(tmp_path, monkeypatch, voice_lab):
+    monkeypatch.chdir(tmp_path)
+    folder = tmp_path / 'voice lab'
+    folder.mkdir()
+    script = folder / 'wrapper.py'
+    script.write_text("print('wrapper started')\n")
+    monkeypatch.setattr(settings, 'sayro_voice_lab_dir', 'voice lab' if voice_lab else '')
+    monkeypatch.setattr(settings, 'sayro_script', 'wrapper.py' if voice_lab else 'voice lab/wrapper.py')
+    resolved = voice_clone._resolve_sayro_script()
+    assert resolved == script
+    result = subprocess.run([sys.executable, str(resolved)],
+                            cwd=voice_clone._resolve_wrapper_cwd(resolved),
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'wrapper started'

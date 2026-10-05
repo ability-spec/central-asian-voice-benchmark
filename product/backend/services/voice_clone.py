@@ -159,8 +159,8 @@ def _resolve_sayro_script() -> Path:
         if p.is_absolute():
             return p
         if settings.sayro_voice_lab_dir:
-            return Path(settings.sayro_voice_lab_dir) / p
-        return p
+            return (Path(settings.sayro_voice_lab_dir) / p).resolve()
+        return p.resolve()
     return _VENDORED_WRAPPER if _VENDORED_WRAPPER.is_file() else None
 
 

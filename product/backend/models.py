@@ -73,3 +73,7 @@ class HealthResponse(BaseModel):
     llm_provider: str = ""
     tts_provider: str = ""
     uptime_seconds: float = 0.0
+    audio_tools_ready: bool = False
+    max_audio_duration_seconds: int = 30
+    max_audio_size_mb: int = 10
+    max_turns_per_session: int = 20

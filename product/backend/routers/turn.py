@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -41,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["turn"])
 
+AUDIO_CONVERSION_TIMEOUT_S = 30
+
 # Allowed audio MIME types
 ALLOWED_AUDIO_TYPES = {
     "audio/wav",
@@ -59,6 +62,7 @@ async def _to_wav(src_path: Path, dst_path: Path) -> None:
     """Normalize any browser audio to 16 kHz mono 16-bit PCM WAV via ffmpeg."""
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-i", str(src_path),
         "-ar", "16000",
@@ -71,7 +75,9 @@ async def _to_wav(src_path: Path, dst_path: Path) -> None:
         *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
     try:
-        _, stderr = await proc.communicate()
+        _, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=AUDIO_CONVERSION_TIMEOUT_S
+        )
     except BaseException:
         if proc.returncode is None:
             proc.kill()
@@ -84,27 +90,41 @@ async def _to_wav(src_path: Path, dst_path: Path) -> None:
 
 
 def _get_audio_duration_seconds(file_bytes: bytes, content_type: str) -> float:
-    """Estimate audio duration via ffprobe for accuracy."""
+    """Read PCM WAV timing from its header; probe other audio containers."""
     import tempfile, os
-    if "wav" not in content_type:
-        with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-        try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", tmp_path],
-                capture_output=True, text=True, timeout=5
-            )
-            val = result.stdout.strip()
-            return float(val) if val else 0.0
-        except Exception:
-            return 0.0
-        finally:
-            try: os.unlink(tmp_path)
-            except Exception: pass
-    data_bytes = max(0, len(file_bytes) - 44)
-    return data_bytes / 32000.0
+    # Read the container rather than assuming 16 kHz mono PCM. Browsers and
+    # uploaded recordings can use other rates, channel counts and bit depths.
+    try:
+        with wave.open(io.BytesIO(file_bytes), "rb") as wav:
+            return wav.getnframes() / wav.getframerate()
+    except (wave.Error, EOFError):
+        pass  # Compressed/float WAV and other containers need ffprobe.
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", tmp_path],
+            capture_output=True, text=True, timeout=5
+        )
+        val = result.stdout.strip()
+        return float(val) if val else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        try: os.unlink(tmp_path)
+        except Exception: pass
+
+
+def _check_normalized_duration(wav_path: Path) -> None:
+    # WebM recordings often omit container duration; decoded PCM is authoritative.
+    duration = _get_audio_duration_seconds(wav_path.read_bytes(), "audio/wav")
+    if duration > settings.max_audio_duration_seconds:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio too long ({duration:.1f}s). Max {settings.max_audio_duration_seconds}s.",
+        )
 
 
 async def _read_bounded_audio(audio):
@@ -248,6 +268,8 @@ async def handle_turn(
             logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
             raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
 
+        await _blocking(_check_normalized_duration, wav_path)
+
         # --- 6. STT (in stt_lang: 'en' for dubbing, else the target language) ---
         t0 = time.time()
         try:
@@ -255,6 +277,9 @@ async def handle_turn(
         except Exception as e:
             logger.error("[%s] STT failed: %s", request_id, str(e))
             raise HTTPException(status_code=502, detail="Speech transcription failed. Please try again.")
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise HTTPException(status_code=422, detail="No speech detected. Please record a clear sentence and try again.")
+        transcript = transcript.strip()
         stt_time = time.time() - t0
         logger.info("[%s] STT (%s): %.2fs | transcript=%r", request_id, stt_lang, stt_time, transcript[:80])
 
@@ -493,6 +518,12 @@ async def handle_turn_stream(
         logger.error("[%s] Audio conversion failed: %s", request_id, exc)
         raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.") from exc
 
+    try:
+        await _blocking(_check_normalized_duration, wav_path)
+    except BaseException:
+        _cleanup_audio(raw_path, wav_path)
+        raise
+
     async def generate():
         runner = None
         t_all = time.time()
@@ -504,6 +535,10 @@ async def handle_turn_stream(
                 logger.error("[%s] Stream STT failed: %s", request_id, str(e))
                 yield _ndjson({"type": "error", "detail": "Speech transcription failed. Please try again."})
                 return
+            if not isinstance(transcript, str) or not transcript.strip():
+                yield _ndjson({"type": "error", "detail": "No speech detected. Please record a clear sentence and try again."})
+                return
+            transcript = transcript.strip()
             stt_ms = round((time.time() - t0) * 1000)
             yield _ndjson({"type": "meta", "request_id": request_id, "transcript": transcript,
                            "language": language, "mode": "dub" if is_dub else "chat",

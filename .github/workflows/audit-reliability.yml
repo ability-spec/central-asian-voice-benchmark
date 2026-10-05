@@ -1,4 +1,4 @@
-name: Audit reliability regressions
+name: BirOvoz CPU regressions
 on: [push, pull_request]
 permissions:
   contents: read
@@ -12,5 +12,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install -r product/backend/requirements.txt pytest pytest-asyncio httpx jiwer
-      - run: |
-          python -m pytest tests/test_pipeline_reliability.py tests/test_dub2_stream.py tests/test_dub3.py tests/test_dub_api.py tests/test_local_clone.py tests/test_voice_clone.py tests/test_routeb_cli.py product/backend/tests/test_routeb_daemon.py -q
+      - run: python -m pytest tests product/backend/tests -q
