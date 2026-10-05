@@ -860,6 +860,8 @@ body{
       <span class="app-tagline">English &rarr; Uzbek / Kazakh &middot; AI Dubbing</span>
     </div>
 
+    <div class="benchmark-status app-reveal" id="serviceStatus" role="status" aria-live="polite" style="text-align:center;margin-bottom:12px">Checking backend…</div>
+
     <!-- Dub target selector -->
     <div class="app-reveal" aria-hidden="true"
          style="text-align:center;margin:0 0 -8px;font-size:11px;letter-spacing:.16em;text-transform:uppercase;opacity:.55;">Dub&nbsp;to:</div>
@@ -922,6 +924,7 @@ body{
         <input class="benchmark-file" id="benchmarkAudio" type="file" accept="audio/*">
         <div class="benchmark-actions">
           <button type="button" class="benchmark-run" id="benchmarkRun" disabled onclick="runBenchmark()">Run benchmark</button>
+          <button type="button" class="leaderboard-load" onclick="cancelBenchmark()">Cancel</button>
           <span class="benchmark-status" id="benchmarkStatus" role="status" aria-live="polite"></span>
         </div>
         <div class="benchmark-result" id="benchmarkResult" hidden aria-live="polite"></div>
@@ -955,6 +958,17 @@ body{
         <button type="button" class="send-recording" id="sendRecordingBtn" onclick="stopRecording()" hidden>Send recording</button>
       </div>
     </div>
+
+    <div class="benchmark-actions app-reveal" style="justify-content:center;margin:0 0 16px">
+      <button type="button" class="leaderboard-load" onclick="stopSession()">Stop</button>
+      <button type="button" class="leaderboard-load" onclick="resetSession()">New session</button>
+    </div>
+    <details class="benchmark-panel app-reveal" style="margin-bottom:16px">
+      <summary>Dub an English recording</summary>
+      <p class="benchmark-copy">Upload up to 30 seconds / 10 MB instead of using the microphone.</p>
+      <input class="benchmark-file" id="dubFile" type="file" accept="audio/*" aria-label="English recording">
+      <button type="button" class="benchmark-run" onclick="dubUploadedRecording()">Dub recording</button>
+    </details>
 
     <!-- Chat -->
     <div class="chat-card app-reveal">
@@ -1090,6 +1104,11 @@ const leaderboardStatus = $('#leaderboardStatus');
 const leaderboardTable = $('#leaderboardTable');
 let benchmarkPromptCache = {};
 let benchmarkAudioUrl = null;
+let benchmarkPromptVersion = 0;
+let benchmarkRunVersion = 0;
+let benchmarkBusy = false;
+let benchmarkController = null;
+let benchmarkLastResult = null;
 let leaderboardLoaded = false;
 
 /* == VAD-CORE-START == */
@@ -1380,6 +1399,7 @@ function beginListening() {
 /* DUB4: single exit point of a dub turn — resume listening in a hands-free
    session, otherwise release the mic and go idle. */
 function onTurnFinished() {
+  if (continuous && processingInFlight) return;
   if (continuous && micStream && !processingInFlight) {
     silentRunMs = 0;
     beginListening();
@@ -1476,6 +1496,7 @@ function enterProduct() {
 
 /* ── Language ──────────────────────────────────────────── */
 function setLang(lang) {
+  if (language !== lang) invalidateBenchmark();
   language = lang;
   // Keep the language and voice button groups independent. Both use the
   // shared .lang-btn styling, but only language buttons carry data-lang.
@@ -1501,8 +1522,26 @@ function toggleBenchmark() {
   }
 }
 
+function invalidateBenchmark() {
+  benchmarkRunVersion++;
+  benchmarkPromptVersion++;
+  if (benchmarkController) benchmarkController.abort();
+  benchmarkController = null;
+  benchmarkBusy = false;
+  var player = document.getElementById('benchmarkAudioPlayer');
+  if (player) { player.pause(); player.removeAttribute('src'); player.load(); }
+  if (benchmarkAudioUrl) URL.revokeObjectURL(benchmarkAudioUrl);
+  benchmarkAudioUrl = null;
+  benchmarkLastResult = null;
+  if (benchmarkResult) benchmarkResult.hidden = true;
+  if (benchmarkPrompt) benchmarkPrompt.value = '';
+  updateBenchmarkRunState();
+}
+
 function updateBenchmarkRunState() {
-  if (benchmarkRunBtn) benchmarkRunBtn.disabled = !(
+  if (benchmarkPrompt) benchmarkPrompt.disabled = benchmarkBusy;
+  if (benchmarkAudio) benchmarkAudio.disabled = benchmarkBusy;
+  if (benchmarkRunBtn) benchmarkRunBtn.disabled = benchmarkBusy || !(
     benchmarkPrompt && benchmarkPrompt.value && benchmarkAudio && benchmarkAudio.files &&
     benchmarkAudio.files.length
   );
@@ -1510,6 +1549,9 @@ function updateBenchmarkRunState() {
 
 async function loadBenchmarkPrompts(lang) {
   if (!benchmarkPrompt) return;
+  var version = ++benchmarkPromptVersion;
+  benchmarkPrompt.textContent = '';
+  updateBenchmarkRunState();
   benchmarkStatus.textContent = 'Loading prompts…';
   try {
     var prompts = benchmarkPromptCache[lang];
@@ -1520,6 +1562,7 @@ async function loadBenchmarkPrompts(lang) {
       prompts = Array.isArray(body.prompts) ? body.prompts : [];
       benchmarkPromptCache[lang] = prompts;
     }
+    if (version !== benchmarkPromptVersion || lang !== language) return;
     benchmarkPrompt.textContent = '';
     var placeholder = document.createElement('option');
     placeholder.value = '';
@@ -1538,6 +1581,7 @@ async function loadBenchmarkPrompts(lang) {
     benchmarkStatus.textContent = prompts.length + ' prompts ready.';
     updateBenchmarkRunState();
   } catch (err) {
+    if (version !== benchmarkPromptVersion || lang !== language) return;
     benchmarkStatus.textContent = 'Could not load prompts. Check the API connection.';
     benchmarkPrompt.textContent = '';
     var failed = document.createElement('option');
@@ -1568,9 +1612,11 @@ function renderBenchmarkResult(data, reference) {
   if (!benchmarkResult) return;
   if (benchmarkAudioUrl) { URL.revokeObjectURL(benchmarkAudioUrl); benchmarkAudioUrl = null; }
   var cardData = Object.assign({}, data, {reference_text: reference});
+  benchmarkLastResult = Object.assign({}, cardData, {audio:undefined, audio_parts:undefined, exported_at:new Date().toISOString()});
   var provider = data.provider_info || {};
   benchmarkResult.innerHTML = '<div class="benchmark-result-title">Scored turn</div>' +
     resultCardHtml(cardData) +
+    '<button type="button" class="leaderboard-load" onclick="downloadBenchmarkResult()">Download result JSON</button>' +
     '<div class="benchmark-provider">' + escapeHtml(data.response_text || '') + '</div>' +
     (data.audio ? '<audio id="benchmarkAudioPlayer" controls preload="none"></audio>' : '');
   if (data.audio) {
@@ -1583,9 +1629,28 @@ function renderBenchmarkResult(data, reference) {
     ? 'Complete. MOCK mode is shown honestly on the result card.' : 'Complete.';
 }
 
+function cancelBenchmark() {
+  invalidateBenchmark();
+  benchmarkStatus.textContent = 'Cancelled. Select a prompt to start again.';
+}
+
+function downloadBenchmarkResult() {
+  if (!benchmarkLastResult) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(benchmarkLastResult, null, 2)], {type:'application/json'}));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'birovoz-benchmark-' + benchmarkLastResult.language + '.json';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 async function runBenchmark() {
-  if (!benchmarkAudio || !benchmarkAudio.files || !benchmarkAudio.files.length || !benchmarkPrompt.value) return;
+  if (benchmarkBusy || !benchmarkAudio || !benchmarkAudio.files || !benchmarkAudio.files.length || !benchmarkPrompt.value) return;
   var file = benchmarkAudio.files[0];
+  if (!file.size || file.size > 10 * 1024 * 1024) {
+    benchmarkStatus.textContent = 'Choose a non-empty recording of at most 10 MB.';
+    return;
+  }
   var reference = benchmarkPrompt.value;
   var form = new FormData();
   form.append('audio', file, file.name || 'benchmark-recording');
@@ -1593,25 +1658,39 @@ async function runBenchmark() {
   form.append('language', language);
   form.append('reference_text', reference);
   form.append('mode', 'chat');
-  benchmarkRunBtn.disabled = true;
+  var version = ++benchmarkRunVersion;
+  var controller = new AbortController();
+  benchmarkController = controller;
+  var timedOut = false;
+  var timeout = setTimeout(() => { timedOut = true; controller.abort(); }, 900000);
+  benchmarkBusy = true;
+  updateBenchmarkRunState();
   benchmarkStatus.textContent = 'Scoring recording…';
   benchmarkResult.hidden = true;
   try {
     // Keep the benchmark upload on the non-streaming scoring contract. Split
     // the path literal so the live dubbing stream contract remains explicit
     // to regression checks and to readers of this file.
-    var res = await fetch(API_BASE + '/api/' + 'turn', {method:'POST', body:form});
+    var res = await fetch(API_BASE + '/api/' + 'turn', {method:'POST', body:form, signal:controller.signal});
     var body = await res.json();
     if (!res.ok) throw new Error(body.detail || 'HTTP ' + res.status);
+    if (version !== benchmarkRunVersion) return;
     renderBenchmarkResult(body, reference);
   } catch (err) {
-    benchmarkStatus.textContent = 'Benchmark failed: ' + err.message;
+    if (version !== benchmarkRunVersion) return;
+    benchmarkStatus.textContent = timedOut ? 'Benchmark timed out. Check the backend, then retry.' : 'Benchmark failed: ' + err.message;
   } finally {
-    updateBenchmarkRunState();
+    clearTimeout(timeout);
+    if (version === benchmarkRunVersion) {
+      benchmarkBusy = false;
+      benchmarkController = null;
+      updateBenchmarkRunState();
+    }
   }
 }
 
 function leaderboardValue(value, percent) {
+  if (value === null || value === undefined || value === '' || typeof value === 'boolean') return '—';
   var n = Number(value);
   if (!isFinite(n)) return '—';
   return percent ? (n * 100).toFixed(1) + '%' : Math.round(n) + ' ms';
@@ -1722,6 +1801,11 @@ async function refreshVoiceStatus() {
   }
 }
 async function setVoiceProvider(provider) {
+  if (processingInFlight) {
+    const label = document.getElementById('voiceStatus');
+    if (label) label.textContent = 'Finish or stop the current dub before changing voice.';
+    return;
+  }
   // If the chip says 'local-clone' but the server only has ElevenLabs
   // configured, transparently switch to elevenlabs so the old env path
   // keeps working when local clone isn't set up.
@@ -1786,6 +1870,9 @@ function bargeIn() {
 
 /* ── Microphone lifecycle (opened once per exchange, reused for barge-in) ── */
 async function openMic() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+    throw new Error('Microphone recording needs HTTPS or localhost and a supported browser. You can upload an English recording below.');
+  }
   if (micStream) return;
   const stream = await navigator.mediaDevices.getUserMedia({audio:{
     channelCount:1, sampleRate:16000,
@@ -2060,12 +2147,17 @@ async function buildAndSend() {
 async function sendRequest(formData) {
   // DUB2: consume the NDJSON stream from /api/turn/stream. The first audio
   // part starts playback while later sentences are still being synthesized.
+  if (processingInFlight) return;
   processingInFlight = true;
   const ctrl = new AbortController();
   streamCtrl = ctrl;
   const meta = {};
   const parts = [], texts = [];
   dubQueue = {parts: parts, idx: 0, btn: null, active: true, streaming: true, closed: false};
+  const requestQueue = dubQueue;
+  let timedOut = false;
+  const requestTimer = setTimeout(() => { timedOut = true; ctrl.abort(); }, 900000);
+  let reader = null;
   let armed = false, doneData = null;
   try {
     const res = await fetch(API_BASE + '/api/turn/stream', {method:'POST', body:formData, signal:ctrl.signal});
@@ -2074,27 +2166,40 @@ async function sendRequest(formData) {
       try { const j = await res.json(); if (j && j.detail) d = j.detail; } catch (e) {}
       throw new Error(d);
     }
-    const reader = res.body.getReader();
+    if (!res.body) throw new Error('Streaming is unavailable in this browser.');
+    reader = res.body.getReader();
     const dec = new TextDecoder();
     let bufTxt = '';
     while (true) {
       const rd = await reader.read();
-      if (rd.done) break;
-      bufTxt += dec.decode(rd.value, {stream: true});
+      if (ctrl.signal.aborted || streamCtrl !== ctrl) return;
+      if (rd.done) {
+        bufTxt += dec.decode();
+        if (bufTxt.trim()) bufTxt += '\n';
+        else break;
+      }
+      if (!rd.done) bufTxt += dec.decode(rd.value, {stream: true});
       let nl;
       while ((nl = bufTxt.indexOf('\n')) >= 0) {
         const line = bufTxt.slice(0, nl).trim();
         bufTxt = bufTxt.slice(nl + 1);
         if (!line) continue;
         const ev = JSON.parse(line);
+        if (doneData) throw new Error('Unexpected data after the completed dub.');
         if (ev.type === 'meta') {
           Object.assign(meta, ev);
         } else if (ev.type === 'part') {
+          if (ev.index !== parts.length || !ev.audio || typeof ev.text !== 'string') {
+            throw new Error('Invalid or out-of-order audio from the server. Please retry.');
+          }
           parts.push(ev.audio); texts.push(ev.text);
           if (!armed) { armed = true; setState(STATE.SPEAKING); playQueueNext(); }
           else { pumpQueue(); }
           statusHint.textContent = '\u{1F50A} ' + ev.text;  // live caption
         } else if (ev.type === 'done') {
+          if (!parts.length || typeof ev.audio !== 'string' || !ev.audio || typeof ev.response_text !== 'string') {
+            throw new Error('Server returned an incomplete dub. Please retry.');
+          }
           doneData = ev;
           dubQueue.closed = true;
           const data = {
@@ -2112,24 +2217,29 @@ async function sendRequest(formData) {
           throw new Error(ev.detail || 'Streaming pipeline error');
         }
       }
+      if (rd.done || doneData) break;
     }
-    if (!doneData && state !== STATE.ERROR) {
-      dubQueue.closed = true;
-      pumpQueue();   // stream truncated: drain what arrived, then finish the turn
-    }
+    if (!doneData) throw new Error('Connection ended before the dub was complete. Please retry.');
   } catch (err) {
-    if (err && err.name === 'AbortError') {
+    if (streamCtrl !== ctrl) return;
+    if (err && err.name === 'AbortError' && !timedOut) {
       // DUB2: barge-in / end-session cancelled the stream — stop silently.
-      dubQueue.active = false;
+      requestQueue.active = false;
+      if (state === STATE.PROCESSING) { releaseMic(); setState(STATE.IDLE); }
       return;
     }
     dubQueue.active = false;
     console.error('Request failed:', err);
     setState(STATE.ERROR);
-    showError(err.message || 'Something went wrong. Tap Retry or record again.');
+    showError(timedOut ? 'Dubbing timed out. Stop the backend if a local model is stuck, then try again.' : (err.message || 'Something went wrong. Tap Retry or record again.'));
   } finally {
-    processingInFlight = false;
-    if (streamCtrl === ctrl) streamCtrl = null;
+    clearTimeout(requestTimer);
+    if (streamCtrl === ctrl) {
+      processingInFlight = false;
+      streamCtrl = null;
+      if (doneData && !requestQueue.active && !currentAudio) onTurnFinished();
+    }
+    if (reader) { try { await reader.cancel(); } catch (e) {} }
   }
 }
 
@@ -2158,7 +2268,8 @@ function retryLast() {
 
 /* ── Display turn in chat ──────────────────────────────── */
 function displayTurn(data) {
-  if (chatEmpty) chatEmpty.remove();
+  const placeholder = chatEl.querySelector('.chat-empty');
+  if (placeholder) placeholder.remove();
   const langLabel = data.language === 'uz' ? 'Uzbek' : 'Kazakh';
 
   const userDiv = document.createElement('div');
@@ -2188,6 +2299,7 @@ function displayTurn(data) {
         '<br><button class="play-again" data-audio-idx="' + audioIdx + '" onclick="playAudioByIndex(' + audioIdx + ',this)">' +
           '<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>Play again' +
         '</button>' +
+        ' <button class="leaderboard-load" onclick="downloadDub(' + audioIdx + ')">Download WAV</button>' +
       '</div>' +
     '</div>';
   chatEl.appendChild(aiDiv);
@@ -2301,6 +2413,8 @@ function playAudio(base64Audio, btn, chain) {
   }).catch(err => {
     cleanup();
     if (err && err.name === 'NotAllowedError') {
+      dubQueue.active = false;
+      continuous = false;
       // Autoplay blocked by the browser: point at the inline Play control
       // instead of failing silently. The mic stays usable.
       paintPlayButton(btn || latestPlayButton(), 'tap');
@@ -2392,6 +2506,8 @@ function setState(s) {
 
 /* ── Error helpers ─────────────────────────────────────── */
 function showError(msg) {
+  cancelStream();
+  stopCurrentPlayback();
   // DUB4: any error ends the hands-free session — the loop never retries
   // behind the user's back. Tapping the mic afterwards starts a fresh one.
   continuous = false;
@@ -2409,6 +2525,79 @@ function hideError() {
   if (state === STATE.ERROR) { releaseMic(); setState(STATE.IDLE); }
 }
 
+function stopCurrentPlayback() {
+  dubQueue.active = false;
+  if (currentAudio) {
+    currentAudio.onended = null;
+    currentAudio.onerror = null;
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
+  currentAudioUrl = null;
+  resetPlayButtons();
+}
+
+function stopSession() {
+  continuous = false;
+  restartPending = false;
+  silentRunMs = 0;
+  captureAction = 'discard';
+  cancelStream();
+  stopCurrentPlayback();
+  stopVadLoop();
+  releaseMic();
+  hideError();
+  setState(STATE.IDLE);
+  statusMain.textContent = 'Stopped — tap the mic to start again';
+  statusHint.textContent = '';
+}
+
+function resetSession() {
+  stopSession();
+  conversationId = newConversationId();
+  turnNumber = 0;
+  lastFormData = null;
+  turnAudio = [];
+  chatEl.textContent = '';
+  const empty = document.createElement('div');
+  empty.className = 'chat-empty';
+  empty.textContent = 'New session. Speak English or upload a recording to start.';
+  chatEl.appendChild(empty);
+  statusMain.textContent = 'New session — ready';
+}
+
+async function dubUploadedRecording() {
+  if (processingInFlight) { statusHint.textContent = 'Wait for the current dub or press Stop.'; return; }
+  const input = document.getElementById('dubFile');
+  const file = input && input.files[0];
+  if (!file) { statusHint.textContent = 'Choose an English audio recording first.'; return; }
+  if (!file.size || file.size > 10 * 1024 * 1024) {
+    statusHint.textContent = 'Choose a non-empty recording of at most 10 MB.'; return;
+  }
+  stopSession();
+  const form = new FormData();
+  form.append('audio', file, file.name);
+  form.append('conversation_id', conversationId);
+  form.append('language', language);
+  form.append('mode', 'dub');
+  form.append('source_language', 'en');
+  lastFormData = form;
+  setState(STATE.PROCESSING);
+  await sendRequest(form);
+}
+
+function downloadDub(idx) {
+  const audio = turnAudio[idx];
+  if (!audio) return;
+  const url = benchmarkAudioUrlFor(audio);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'birovoz-dub-' + (idx + 1) + '.wav';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 /* ── Helpers ───────────────────────────────────────────── */
 function escapeHtml(str) {
   const d = document.createElement('div');
@@ -2419,8 +2608,29 @@ function cleanupStream(stream) {
   if (stream) stream.getTracks().forEach(t => t.stop());
 }
 
+async function refreshServiceStatus() {
+  const label = document.getElementById('serviceStatus');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 10000);
+  try {
+    const response = await fetch(API_BASE + '/health', {signal:controller.signal});
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const info = await response.json();
+    label.textContent = (info.mock_mode ? 'MOCK demo — canned speech and beep audio' : 'Live providers configured') +
+      (info.audio_tools_ready ? ' · Audio tools ready' : ' · Install ffmpeg and ffprobe before recording') +
+      ' · Up to ' + info.max_audio_duration_seconds + ' s / ' + info.max_audio_size_mb + ' MB per recording';
+  } catch (error) {
+    label.textContent = 'Backend unavailable — start BirOvoz, then reload this page.';
+  } finally { clearTimeout(timer); }
+}
+refreshServiceStatus();
+
 /* ── Init ──────────────────────────────────────────────── */
 window.addEventListener('beforeunload', () => {
+  cancelStream();
+  if (benchmarkController) benchmarkController.abort();
+  releaseMic();
+  if (benchmarkAudioUrl) URL.revokeObjectURL(benchmarkAudioUrl);
   if (currentAudio)    currentAudio.pause();
   if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
 });
