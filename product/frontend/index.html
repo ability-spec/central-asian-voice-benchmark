@@ -1869,15 +1869,17 @@ function bargeIn() {
 }
 
 /* ── Microphone lifecycle (opened once per exchange, reused for barge-in) ── */
-async function openMic() {
+let captureVersion = 0;
+async function openMic(version = captureVersion) {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
     throw new Error('Microphone recording needs HTTPS or localhost and a supported browser. You can upload an English recording below.');
   }
-  if (micStream) return;
+  if (micStream) return true;
   const stream = await navigator.mediaDevices.getUserMedia({audio:{
     channelCount:1, sampleRate:16000,
     echoCancellation:true, noiseSuppression:true
   }});
+  if (version !== captureVersion) { cleanupStream(stream); return false; }
   micStream = stream;
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -1890,6 +1892,7 @@ async function openMic() {
   micMimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
     ? 'audio/webm;codecs=opus'
     : MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : 'audio/mp4';
+  return true;
 }
 
 function releaseMic() {
@@ -1958,12 +1961,13 @@ function attachRecorder() {
 
 /* ── Start capture: VAD auto-sends; tap-to-stop preserved as fallback ── */
 async function startRecording() {
+  const version = ++captureVersion;
   hideError();
   setState(STATE.PROCESSING);
   statusMain.textContent = 'Requesting microphone…';
 
   try {
-    await openMic();
+    if (!(await openMic(version)) || version !== captureVersion) return;
     if (mediaRecorder && mediaRecorder.state === 'recording') return;
     continuous = autoSendInput.checked;
     silentRunMs = 0;
@@ -1981,6 +1985,7 @@ async function startRecording() {
       startWaveform();
     }
   } catch (err) {
+    if (version !== captureVersion) return;
     releaseMic();
     setState(STATE.IDLE);
     if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
@@ -2121,8 +2126,11 @@ async function buildAndSend() {
     statusMain.textContent = 'Still processing — finish current dub first';
     return;
   }
+  const version = captureVersion;
   const blob = new Blob(audioChunks, {type: mediaRecorder.mimeType});
-  if (!(await isCaptureValid(blob))) {
+  const valid = await isCaptureValid(blob);
+  if (version !== captureVersion) return;
+  if (!valid) {
     // DUB4FIX: invalid capture — end the loop quietly with a clear local
     // message instead of burning a request on garbage (backend stays 422-free).
     releaseMic();
@@ -2548,6 +2556,7 @@ function stopCurrentPlayback() {
 }
 
 function stopSession() {
+  captureVersion++;
   continuous = false;
   restartPending = false;
   silentRunMs = 0;

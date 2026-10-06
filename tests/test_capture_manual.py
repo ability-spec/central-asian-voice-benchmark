@@ -16,7 +16,7 @@ const autoSendInput = {checked:false};
 let vadStarts = 0, waveformStarts = 0;
 function hideError() {}
 function setState(s) {state = s;}
-async function openMic() {}
+async function openMic() {return true;}
 function attachRecorder() {mediaRecorder = {state:'recording'};}
 function beginListening() {vadStarts++;}
 function startWaveform() {waveformStarts++;}
@@ -95,7 +95,7 @@ const autoSendInput = {checked:true};
 let vadStarts = 0;
 function hideError() {}
 function setState(s) {state = s;}
-async function openMic() {}
+async function openMic() {return true;}
 function beginListening() {vadStarts++; state = STATE.LISTENING;}
 function showError(m) {throw new Error(m);}
 (async () => {

@@ -57,6 +57,7 @@ FNS = {n: _extract_fn(SRC, n) for n in
 
 def run_node(body: str) -> str:
     preamble = "\n".join(FNS.values()) + """
+let captureVersion = 0;
 let recordingTimer = null, recordingSeconds = 0;
 let statusTimer = { textContent: '', classList: { add(){}, remove(){} } };
 let statusMain = { textContent: '' }, statusHint = { textContent: '' };
