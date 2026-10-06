@@ -78,3 +78,5 @@ the terminal stream event without waiting for server EOF. Full suite: 258 passed
 See `PUBLICATION_PLAN.md` for three reviewable patches and gradual publication.
 
 Decoded WAV duration is now rechecked before STT in both endpoints, including uploads whose original container has no duration metadata.
+
+Media cancellation follow-up: obsolete playback callbacks and microphone permission results are ignored after Stop/replacement. Stream cancellation immediately unlocks the next request while old cleanup cannot clear the new request. Full CPU/Node suite: 269 passed; real-browser and live GPU/provider acceptance remains pending.

@@ -2255,6 +2255,8 @@ function cancelStream() {
   // DUB2: barge-in / session end must stop the pending stream AND the
   // queued parts; the server drops its not-yet-started sentence jobs.
   if (streamCtrl) { try { streamCtrl.abort(); } catch (e) {} }
+  streamCtrl = null;
+  processingInFlight = false;
   dubQueue.active = false;
 }
 
