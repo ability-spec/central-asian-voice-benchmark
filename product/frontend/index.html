@@ -2366,7 +2366,12 @@ function playAudioByIndex(idx, btn) {
 
 function playAudio(base64Audio, btn, chain) {
   if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
-  if (currentAudio)    { currentAudio.pause(); currentAudio = null; }
+  if (currentAudio) {
+    currentAudio.onended = null;
+    currentAudio.onerror = null;
+    currentAudio.pause();
+    currentAudio = null;
+  }
 
   const bytes = atob(base64Audio);
   const arr = new Uint8Array(bytes.length);
@@ -2393,6 +2398,7 @@ function playAudio(base64Audio, btn, chain) {
   };
 
   audio.onended = () => {
+    if (currentAudio !== audio) return;
     cleanup();
     // DUB3: while the queue is active, a finished part chains to the next
     // one instead of returning to idle. End of audio owns the next step:
@@ -2401,16 +2407,19 @@ function playAudio(base64Audio, btn, chain) {
     onTurnFinished();
   };
   audio.onerror = () => {
+    if (currentAudio !== audio) return;
     dubQueue.active = false;   // abort the queue on a broken part
     cleanup();
     releaseMic();
     showError('Failed to play audio response.');
   };
   audio.play().then(() => {
+    if (currentAudio !== audio) return;
     // DUB4: voice barge-in is live while the dub plays. The mic is already
     // open (reused from capture), so onset detection starts instantly.
     if (state === STATE.SPEAKING && micStream) startVadLoop('barge');
   }).catch(err => {
+    if (currentAudio !== audio) return;
     cleanup();
     if (err && err.name === 'NotAllowedError') {
       dubQueue.active = false;
