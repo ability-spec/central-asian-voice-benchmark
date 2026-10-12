@@ -1338,7 +1338,6 @@ def _get_daemon() -> RouteBDaemonClient | None:
 
 
 # Compatibility alias for main.py shutdown hook (pre-7cd)
-close_route_b_worker = _shutdown_daemon
 
 @atexit.register
 def _shutdown_daemon() -> None:
