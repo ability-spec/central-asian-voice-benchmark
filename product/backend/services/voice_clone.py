@@ -1351,6 +1351,11 @@ def _shutdown_daemon() -> None:
         _routeb_daemon = None
 
 
+def close_route_b_worker() -> None:
+    """Close the current daemon during application shutdown."""
+    _shutdown_daemon()
+
+
 def _synthesize_via_daemon(text: str, work_dir: Path, timeout: float) -> bytes:
     """Attempt synthesis via the persistent daemon. Returns WAV bytes on
     success, raises RuntimeError on any failure (caller falls back)."""
