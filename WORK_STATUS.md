@@ -219,3 +219,63 @@ $env:SAYRO_MODEL_PATH = 'C:\Users\erkin\.cache\huggingface\hub\models--uzlm--say
 - Entire `product/backend/services/voice_clone.py` deliberately excluded: stage-owned shutdown wrapper depends on the owner's initial deletion of a premature alias. Mechanically staging only the added function would retain the problematic alias in the committed tree. Both hunks remain unchanged in the working tree; no owner's change is incorporated into the commit.
 - The recorded 136 passing regressions apply to the working tree including the retained local voice_clone fixes. This commit is not claimed to make a fresh checkout independently runnable without resolving that baseline dependency.
 - No `git add .`, reset, clean, external edit or push. All six paths are explicitly staged; staged path list/diff checked before committing. Commit hash reported in chat after creation.
+
+## Accepted clean-HEAD recovery and new Uzbek experiment
+- Subsequent commits: `29cfc9adf506e9d8fa284b8efed46f53b5d58f5c` preserves the shutdown function; user then authorized original alias deletion, committed alone as `eef98798d75b335858e960f4469aa6d76c3b92a3`.
+- Clean detached worktree `logs/head-recovery-eef9879` imported the application solely from HEAD; five no-synthesis shutdown/lifecycle checks passed in 1.46 s, including actual idle Python termination. Existing .env read without copying; cloud keys disabled. Worktree clean afterward. User accepts import/lifecycle recovery, not a repeated full voice pipeline from that worktree.
+- Exact backup path `/product/backend/.env.pre-vendored.bak` added once to local `.git/info/exclude`; backup unchanged. Original remaining 22 untracked files preserved.
+- User now authorizes optimization: at most six local syntheses / 30 minutes, no API, model downloads, external-project changes or push. Stop retesting and Kazakh clone excluded.
+- Experiment started 2026-10-12 19:42 UTC (14:42 Winnipeg); deadline no later than 20:12 UTC. Temporary measurements in ignored `logs/uz_opt_20261012/`, audio in ignored `audio_output/uz_opt_20261012/`.
+- Six-request design: cold+repeat baseline (Seed-VC 15 steps, Sayro bfloat16), cold+repeat Seed-VC candidate (10 steps, Sayro bfloat16), cold+repeat Sayro candidate (15 steps, Sayro float16). Each candidate differs from baseline by one setting. Existing text/reference and other knobs unchanged. No combined candidate in this budget.
+- Reuse existing diagnostic adapter/function timers and 200 ms RAM/VRAM sampling. Disable daemon retry, use direct local client without one-shot/cloud fallback. Fresh daemon between configurations, same daemon within each pair. Production settings/source unchanged.
+- Stopped only previously launched FastAPI tree for uncontended GPU measurement; restore baseline server afterward. Fixed saved-audio replay server remains separate and untouched.
+- Quality is pending user listening. Output-length randomness remains; six runs are exploratory comparisons, not statistical proof.
+
+### Six-run results, completed within budget
+- Completed exactly 6/6 local synthesis requests, no retries, no one-shot/cloud fallback, no errors or model downloads. Active request span including configuration restarts: 154.51 s; results summarized by 19:45:56 UTC, under four minutes after experiment preparation began. No additional synthesis authorized/performed. No Stop or Kazakh tests repeated.
+- Each pair reused actual Sayro/Seed-VC processes. PIDs (wrapper / Sayro runtime / Seed-VC runtime): baseline 20712 / 22784 / 32868; Seed-VC 10 steps 4444 / 24640 / 12368; Sayro float16 25768 / 25524 / 10008. Fresh model processes between configurations; cold means process/model cold, not disk-cache cold.
+
+| Variant | State | Total local TTS s | Sayro generation s | Seed-VC conversion s | Model-load s | WAV s | RTF | Peak tree RAM GiB | Peak device VRAM MiB |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Baseline: 15 steps / bfloat16 | cold | 43.027 | 7.998 | 7.847 | 22.909 | 3.193 | 13.476 | 6.12 | 7826 |
+| Baseline: 15 steps / bfloat16 | repeat | 10.696 | 5.399 | 4.826 | 0 | 2.310 | 4.630 | 5.26 | 7845 |
+| Seed-VC: 10 steps / bfloat16 | cold | 36.601 | 5.804 | 6.044 | 22.053 | 2.554 | 14.330 | 6.03 | 7839 |
+| Seed-VC: 10 steps / bfloat16 | repeat | 8.385 | 4.470 | 3.460 | 0 | 2.229 | 3.762 | 5.05 | 7856 |
+| Sayro: 15 steps / float16 | cold | 41.935 | 8.789 | 8.055 | 21.808 | 3.750 | 11.183 | 6.09 | 7861 |
+| Sayro: 15 steps / float16 | repeat | 13.111 | 6.902 | 5.449 | 0 | 2.949 | 4.446 | 6.66 | 7858 |
+
+- Stage generation/conversion excludes model loading. Total includes loading, startup, transport and tiny file writes; no STT/translation in any total. Queue uncontended (<0.003 ms). Nested timers are not summed twice. RAM/VRAM maxima sampled ~200 ms; device total includes desktop. Tree RAM is physical working set, not private commit.
+- For each row, peak tree private commit GiB: 14.23 / 13.22 / 13.88 / 13.22 / 14.63 / 14.04. System physical RAM peaks GiB: 14.73 / 13.71 / 14.28 / 13.33 / 14.52 / 15.14. Memory headroom is still narrow; no demonstrated memory optimization.
+- Separate normalized repeat-stage comparison: baseline Sayro 2.327 s per second of raw audio, float16 Sayro 2.332 (no convincing gain). Baseline Seed-VC 2.089 s per second of converted output, 10-step candidate 1.552 (~25.7% lower in this single comparison). Total repeat latency 10.696→8.385 s (~21.6% lower); total RTF 4.630→3.762 (~18.7% lower). These exploratory differences are not statistical guarantees. Unchanged Sayro also varies between runs; its faster time in the Seed-VC candidate is not attributed to the diffusion-step change.
+- Six WAVs are valid non-silent PCM16 mono, 22050 Hz, RMS 0.0300–0.0362. This is a technical container/signal check, NOT a listening-quality or voice-identity verdict.
+- Tentative best candidate for listening: Seed-VC 10 steps, Sayro bfloat16. Sayro float16 is not recommended on these measurements. No combined candidate tested; no candidate adopted as production default.
+- Saved page http://127.0.0.1:8003/listen.html provides all six output links and three repeat-output players, plus separate raw Sayro players before voice conversion. Browser decoded all six displayed full/raw players with readyState 4 and no media error. User auditory evaluation still pending.
+- Artifacts: ignored `logs/uz_opt_20261012/results.json`, `summary.json`, `events_*.jsonl`, `memory.json`, `listen-preview.png`; output WAVs/raw Sayro under ignored `audio_output/uz_opt_20261012/`. The listening page makes no API/model call.
+- Restored actual FastAPI with unchanged baseline (15 steps confirmed via `/api/voice/status`, models not preloaded); launcher PID 33832 in `logs/demo_server.pid`. Preview launcher PID 23520. External voice-lab/Seed-VC, .env, quality defaults and production source untouched; only tracked WORK_STATUS.md updated in this experiment. No source-change regression rerun needed; real local outputs verified. No commit/push.
+- Next: user listens to baseline vs seedvc10 (and optional float16), supplies intelligibility/voice similarity/artifact notes and selects acceptable setting. Until then baseline remains active and MVP quality acceptance is not declared complete. Six-synthesis allowance exhausted.
+
+## User-approved 10-step profile adoption
+- User listened to baseline and seedvc10 and states quality is satisfactory. This is the user's **subjective evaluation of those samples**, not a quality guarantee or invented per-file score. Sayro float16 was not selected.
+- BirOvoz Settings default changed from 15 to 10 steps. Updated only the matching ROUTE_B_DIFFUSION_STEPS entry in the untracked local .env to 10 without printing/copying its other fields. Sayro remains bfloat16; all other quality settings and external projects unchanged.
+- Previous baseline rollback: stop backend, set `$env:ROUTE_B_DIFFUSION_STEPS = '15'`, then restart the same uvicorn command. For persistent rollback edit only that key in local .env. Existing resident daemon arguments require restart.
+- Documented accepted profile and launch/rollback in tracked product/README.md. Configuration regression checks cover default 10 and explicit 10/15 CLI forwarding. Historical CLI tests pin their old 15-step fixture explicitly.
+- Validation limited to three sequential local calls using existing text/reference, no retries, one-shot/cloud fallback, STT or translation. Daemon was unloaded at start: one cold plus two repeat calls, NOT three already-warm calls. No extra synthesis to hide the cold start. Diagnostics log actual parsed Seed-VC diffusion_steps and actual Sayro dtype.
+- Pending: per-request results, appropriate regressions, restore 10-step server, targeted commit of config/documentation/tests only. Before this change, agent-created local commits were 3a3345b, 29cfc9a, eef9879 (three total).
+
+### Adoption verified
+- Exactly three successful direct local calls; first cold, next two repeat. All reported actual parsed Seed-VC args `diffusion_steps=10` and actual Sayro loader `dtype=bfloat16`. No STT, translation, paid API, retries, one-shot/cloud fallback or downloads.
+- Persistent PIDs unchanged through all three: wrapper launcher 32784, Sayro runtime 31380, Seed-VC runtime 29060.
+
+| Request | State | WAV duration s | Total local TTS s | RTF | Peak tree physical RAM GiB | Peak device VRAM MiB | Fallback |
+|---|---|---:|---:|---:|---:|---:|---|
+| 1 | cold | 2.392 | 34.724 | 14.519 | 6.19 | 7801 | no |
+| 2 | repeat | 2.635 | 9.241 | 3.506 | 4.97 | 7801 | no |
+| 3 | repeat | 3.111 | 10.710 | 3.442 | 5.34 | 7809 | no |
+
+- Total TTS includes process/model startup on cold run, inference, transport and artifact save; no full voice-cycle time mixed in. Sampling ~200 ms; physical RAM is driver/model-process working set, VRAM total includes desktop. These observations are not a guaranteed 22% speedup. Generated WAV lengths and times vary.
+- Evidence in ignored `logs/uz_profile10_validation/confirmed_results.json`, `events_*.jsonl`, `memory.json`, `run.log`; WAVs in ignored `audio_output/uz_profile10_validation/`.
+- 72 relevant regressions verified across two runs: 71 passed initially; one documentation test rejected a machine-specific absolute Windows path. Replaced it with Join-Path USERPROFILE, then that test passed (1.29 s). No test weakened. Tests cover local-clone CLI/fallback seams, provider status, default 10, explicit 10 and rollback 15, and completed WAV normalization. Cloud clients/models substituted and API keys blank in test process. `git diff --check` passes.
+- Regression command: backend Python `-B -m pytest tests/test_local_clone.py tests/test_voice_clone.py tests/test_route_b_profile.py tests/test_openai_wav.py -q -p no:cacheprovider --basetemp <unique OS temp directory>`. Targeted retry: `tests/test_local_clone.py::test_no_absolute_windows_paths_in_tracked_source`.
+- Restored working server with 10-step environment override; launcher PID 21308 saved in logs/demo_server.pid. No startup synthesis. Source settings/profile are persisted; local .env is never staged.
+- Targeted commit scope: product/backend/config.py, product/README.md, tests/test_local_clone.py, tests/test_route_b_profile.py, WORK_STATUS.md. Prior experiment/quality evidence in this document relates directly to choosing this profile. No secret, model, audio, runtime/replay files or owner's original untracked sources staged. Expected agent-created commit total after this adoption: four.
+- Remaining MVP limitations: paid STT/translation prohibited; final full microphone voice pipeline with accepted profile not re-run; detailed physical/acoustic barge-in evidence still preliminary; Kazakh local cloning unsupported; no load-only warm-up or guarantee of stopping running GPU computation; cold start and tight memory headroom persist. User's acceptance applies subjectively to listened baseline/seedvc10 samples, not every possible text. No external changes or push.

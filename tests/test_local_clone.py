@@ -73,6 +73,8 @@ def voice_env(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "seedvc_dir", "")
     monkeypatch.setattr(settings, "seedvc_reference_wav", "")
     monkeypatch.setattr(settings, "route_b_extra_args", "")
+    # Pin historical CLI assertions; default/10-step/rollback are covered separately.
+    monkeypatch.setattr(settings, "route_b_diffusion_steps", 15)
     monkeypatch.setattr(settings, "local_clone_timeout_s", 30)
     monkeypatch.setattr(voice_clone, "_active_provider", None)
     voice_clone._local_clone_busy = False
