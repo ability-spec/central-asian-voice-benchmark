@@ -73,6 +73,18 @@ def _mock_synthesize(text: str, language: str) -> bytes:
 
 # ---------- Real TTS (OpenAI) ----------
 
+def _finalize_pcm_wav(data: bytes) -> bytes:
+    """Replace streaming WAV size placeholders with actual PCM lengths."""
+    with wave.open(io.BytesIO(data), "rb") as source:
+        params = source.getparams()
+        frames = source.readframes(source.getnframes())
+    out = io.BytesIO()
+    with wave.open(out, "wb") as target:
+        target.setparams(params._replace(nframes=len(frames) // (params.nchannels * params.sampwidth)))
+        target.writeframes(frames)
+    return out.getvalue()
+
+
 def _openai_synthesize(text: str, language: str) -> bytes:
     """Generate speech audio from text using OpenAI TTS API."""
     client = OpenAI(api_key=settings.openai_api_key, timeout=30.0)
@@ -87,7 +99,7 @@ def _openai_synthesize(text: str, language: str) -> bytes:
                 response_format="wav",
                 timeout=30.0,
             )
-            return response.content
+            return _finalize_pcm_wav(response.content)
         except APIError as e:
             last_err = e
             logger.warning("TTS attempt %d failed: %s", attempt + 1, e)

@@ -866,6 +866,7 @@ body{
         <div class="status-timer" id="statusTimer">0:00</div>
         <div class="status-hint" id="statusHint">Tap once to start &middot; tap again to stop</div>
         <button type="button" class="send-recording" id="sendRecordingBtn" onclick="stopRecording()" hidden>Send recording</button>
+        <button type="button" class="send-recording" id="stopSessionBtn" onclick="endHandsFree()" hidden>Stop</button>
       </div>
     </div>
 
@@ -1269,10 +1270,21 @@ function endHandsFree() {
   captureAction = 'discard';
   cancelStream();  // DUB2: a session end also aborts an in-flight stream
   stopVadLoop();
+  if (currentAudio) {
+    currentAudio.onended = null;
+    currentAudio.onerror = null;
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+  resetPlayButtons();
+  stopWaveform();
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     stopCapture();           // onstop discards, releases mic, sets idle
   } else {
-    if (!processingInFlight) { releaseMic(); setState(STATE.IDLE); }
+    releaseMic(); setState(STATE.IDLE);
+    statusMain.textContent = 'Stopped';
+    statusHint.textContent = 'Playback stopped · connection closed · running server work may finish';
   }
 }
 
@@ -1355,6 +1367,7 @@ function setLang(lang) {
   if (state === STATE.IDLE) {
     statusMain.textContent = lang === 'uz' ? "Speak English → O'zbekcha" : 'Speak English → Қазақша';
   }
+  refreshVoiceStatus();
 }
 
 /* ── Voice provider (VC1 + CP5 local clone) ─────────────── */
@@ -1369,8 +1382,8 @@ function _selectMyVoiceProvider(st) {
       provider: 'local-clone',
       label: 'Sayro + Seed-VC',
       title: 'Speak in my cloned voice (local Sayro + Seed-VC)',
-      activeLine: 'My cloned voice (' + (lc.model || 'sayro-seedvc') + ')',
-      readyLine: 'My cloned voice is ready — switch above',
+      activeLine: 'Local Uzbek voice (' + (lc.model || 'sayro-seedvc') + ') — models load on demand; cold start possible',
+      readyLine: 'Local voice configured — models load on demand',
       unconfiguredLine: 'Local clone not configured — using the standard voice',
     };
   }
@@ -1418,7 +1431,10 @@ async function refreshVoiceStatus() {
       if (!sel.provider) {
         el.textContent = sel.unconfiguredLine;
       } else if ((st.resolved_provider === 'local-clone') || (st.resolved_provider === 'elevenlabs')) {
-        el.textContent = sel.activeLine;
+        el.textContent = st.resolved_provider === 'local-clone' &&
+          !(st.local_clone.languages || ['uz']).includes(language)
+          ? 'Kazakh uses standard OpenAI voice — local clone supports Uzbek only'
+          : sel.activeLine;
       } else {
         el.textContent = sel.readyLine;
       }
@@ -1479,6 +1495,7 @@ function bargeIn() {
   cancelStream();  // DUB2: abort in-flight stream + drop queued parts (server cancels pending jobs)
   if (currentAudio) {
     try { currentAudio.onended = null; } catch (e) {}
+    try { currentAudio.onerror = null; } catch (e) {}
     try { currentAudio.pause(); } catch (e) {}
     currentAudio = null;
   }
@@ -1775,6 +1792,7 @@ async function sendRequest(formData) {
   let armed = false, doneData = null;
   try {
     const res = await fetch(API_BASE + '/api/turn/stream', {method:'POST', body:formData, signal:ctrl.signal});
+    if (streamCtrl !== ctrl || ctrl.signal.aborted) return;
     if (!res.ok) {
       let d = 'HTTP ' + res.status;
       try { const j = await res.json(); if (j && j.detail) d = j.detail; } catch (e) {}
@@ -1785,6 +1803,7 @@ async function sendRequest(formData) {
     let bufTxt = '';
     while (true) {
       const rd = await reader.read();
+      if (streamCtrl !== ctrl || ctrl.signal.aborted) return;
       if (rd.done) break;
       bufTxt += dec.decode(rd.value, {stream: true});
       let nl;
@@ -1793,6 +1812,7 @@ async function sendRequest(formData) {
         bufTxt = bufTxt.slice(nl + 1);
         if (!line) continue;
         const ev = JSON.parse(line);
+        if (streamCtrl !== ctrl || ctrl.signal.aborted) return;
         if (ev.type === 'meta') {
           Object.assign(meta, ev);
         } else if (ev.type === 'part') {
@@ -1824,6 +1844,7 @@ async function sendRequest(formData) {
       pumpQueue();   // stream truncated: drain what arrived, then finish the turn
     }
   } catch (err) {
+    if (streamCtrl !== ctrl || ctrl.signal.aborted) return;
     if (err && err.name === 'AbortError') {
       // DUB2: barge-in / end-session cancelled the stream — stop silently.
       dubQueue.active = false;
@@ -1834,8 +1855,10 @@ async function sendRequest(formData) {
     setState(STATE.ERROR);
     showError(err.message || 'Something went wrong. Tap Retry or record again.');
   } finally {
-    processingInFlight = false;
-    if (streamCtrl === ctrl) streamCtrl = null;
+    if (streamCtrl === ctrl) {
+      processingInFlight = false;
+      streamCtrl = null;
+    }
   }
 }
 
@@ -1843,7 +1866,10 @@ function cancelStream() {
   // DUB2: barge-in / session end must stop the pending stream AND the
   // queued parts; the server drops its not-yet-started sentence jobs.
   if (streamCtrl) { try { streamCtrl.abort(); } catch (e) {} }
+  streamCtrl = null;
+  processingInFlight = false;
   dubQueue.active = false;
+  dubQueue.parts = [];
 }
 
 function pumpQueue() {
@@ -1987,6 +2013,7 @@ function playAudio(base64Audio, btn, chain) {
   };
 
   audio.onended = () => {
+    if (currentAudio !== audio) return;
     cleanup();
     // DUB3: while the queue is active, a finished part chains to the next
     // one instead of returning to idle. End of audio owns the next step:
@@ -1995,16 +2022,19 @@ function playAudio(base64Audio, btn, chain) {
     onTurnFinished();
   };
   audio.onerror = () => {
+    if (currentAudio !== audio) return;
     dubQueue.active = false;   // abort the queue on a broken part
     cleanup();
     releaseMic();
     showError('Failed to play audio response.');
   };
   audio.play().then(() => {
+    if (currentAudio !== audio) return;
     // DUB4: voice barge-in is live while the dub plays. The mic is already
     // open (reused from capture), so onset detection starts instantly.
     if (state === STATE.SPEAKING && micStream) startVadLoop('barge');
   }).catch(err => {
+    if (currentAudio !== audio) return;
     cleanup();
     if (err && err.name === 'NotAllowedError') {
       // Autoplay blocked by the browser: point at the inline Play control
@@ -2030,6 +2060,7 @@ const ICONS = {
 };
 
 function setState(s) {
+  document.getElementById('stopSessionBtn').hidden = s === STATE.IDLE || s === STATE.ERROR;
   autoSendInput.disabled = s !== STATE.IDLE && s !== STATE.ERROR;
   sendRecordingBtn.hidden = s !== STATE.LISTENING && s !== STATE.RECORDING;
   if (state === s) return;
