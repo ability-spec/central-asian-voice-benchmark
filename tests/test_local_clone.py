@@ -183,10 +183,17 @@ def test_resolved_provider_local_when_configured(local_configured):
     assert voice_clone.resolved_provider() == "openai"
 
 
-def test_status_reports_no_secrets_or_paths(voice_env):
+def test_status_reports_no_secrets_or_paths(voice_env, monkeypatch):
+    wrapper = voice_env / 'private-lab' / 'wrapper.py'
+    seedvc = voice_env / 'private-models' / 'seed-vc'
+    monkeypatch.setattr(voice_clone, '_resolve_sayro_script', lambda: wrapper)
+    monkeypatch.setattr(voice_clone, '_resolve_seedvc_dir', lambda: seedvc)
     body = client.get("/api/voice/status").json()
     flat = str(body)
     assert "C:\\" not in flat
+    assert str(voice_env) not in flat
+    assert body['local_clone']['wrapper_script'] == 'wrapper.py'
+    assert body['local_clone']['seedvc_dir'] == 'seed-vc'
     assert body["resolved_provider"] == "openai"
     assert body["local_clone"]["busy"] is False
 

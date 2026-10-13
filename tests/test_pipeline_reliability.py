@@ -111,8 +111,11 @@ async def test_stream_chat_reports_distinct_stage_times(pipeline, monkeypatch):
     assert done['tts_ms'] >= 55
     assert done['total_ms'] >= done['llm_ms'] + done['tts_ms'] - 2
 
-def test_shutdown_alias_importable():
-    assert voice_clone.close_route_b_worker is voice_clone._shutdown_daemon
+def test_shutdown_compatibility_calls_current_daemon_shutdown(monkeypatch):
+    calls = []
+    monkeypatch.setattr(voice_clone, '_shutdown_daemon', lambda: calls.append('shutdown'))
+    voice_clone.close_route_b_worker()
+    assert calls == ['shutdown']
 
 @pytest.mark.asyncio
 async def test_ffmpeg_is_reaped_on_cancellation(tmp_path, monkeypatch):

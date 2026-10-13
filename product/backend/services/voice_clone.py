@@ -305,6 +305,8 @@ def tts_label(report: dict = None) -> str:
 
 
 def status() -> dict:
+    wrapper_script = _resolve_sayro_script()
+    seedvc_dir = _resolve_seedvc_dir()
     s = {
         "tts_provider_env": settings.tts_provider,
         "active_provider": active_provider(),
@@ -325,8 +327,8 @@ def status() -> dict:
             "model": "sayro-seedvc",
             "seedvc_version": settings.seedvc_version,
             "diffusion_steps": settings.route_b_diffusion_steps,
-            "wrapper_script": str(_resolve_sayro_script()) if _resolve_sayro_script() else None,
-            "seedvc_dir": str(_resolve_seedvc_dir()) if _resolve_seedvc_dir() else None,
+            "wrapper_script": wrapper_script.name if wrapper_script else None,
+            "seedvc_dir": seedvc_dir.name if seedvc_dir else None,
             "daemon": {
                 "enabled": (not _daemon_disabled),
                 "running": False,
