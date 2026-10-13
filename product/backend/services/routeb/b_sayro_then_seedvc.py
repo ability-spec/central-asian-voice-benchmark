@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (LAB, filter_kwargs, is_cuda_oom, load_qwen_model,
                     parse_numbered, print_oom_advice, unpack_generation, write_wav)
 
-SAYRO_ID = "uzlm/sayro-tts-1.7B"
+SAYRO_ID = os.environ.get("SAYRO_MODEL_PATH", "uzlm/sayro-tts-1.7B")
 SEEDVC_URL = "https://github.com/Plachtaa/seed-vc"
 
 
@@ -915,4 +915,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

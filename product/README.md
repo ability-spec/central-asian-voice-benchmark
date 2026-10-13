@@ -120,6 +120,32 @@ closes the daemon process tree. Restart after changing settings, dependencies,
 checkpoints or reference audio. Seed-VC V1 uses the one-shot fallback path.
 See [the handoff](../HANDOFF.md) for remaining release acceptance checks.
 
+## Uzbek local-clone profile
+
+The listening-approved BirOvoz default is Seed-VC V2 with 10 diffusion steps.
+Sayro remains bfloat16; other generation parameters are unchanged. The owner
+accepted the baseline and 10-step samples subjectively; quality on other text
+and a fixed latency improvement are not guaranteed.
+
+From the repository root in PowerShell, using existing model paths and credentials:
+
+```powershell
+$env:HF_HUB_OFFLINE = '1'
+$env:TRANSFORMERS_OFFLINE = '1'
+$env:SAYRO_MODEL_PATH = Join-Path $env:USERPROFILE '.cache\huggingface\hub\models--uzlm--sayro-tts-1.7B\snapshots\77a6db76f4e709510b7d479de5e927ab662b3dac'
+$env:ROUTE_B_DIFFUSION_STEPS = '10'
+.\product\backend\.venv\Scripts\python.exe -B -m uvicorn product.backend.main:app --host 127.0.0.1 --port 8000
+```
+
+To restore the previous baseline, stop the server, set
+`$env:ROUTE_B_DIFFUSION_STEPS = '15'`, and start it with the same command.
+For persistence, change only `ROUTE_B_DIFFUSION_STEPS` in the untracked local
+`product/backend/.env`. Restart after changing it: resident daemon arguments
+are fixed at process creation. Use one worker, without reload.
+
+Starting the server does not call cloud APIs. Microphone requests on the live
+app still use configured paid STT/translation; saved-audio playback is free.
+
 ## Supported languages
 
 | Code | Language | STT model | LLM | TTS |

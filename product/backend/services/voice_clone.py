@@ -305,6 +305,8 @@ def tts_label(report: dict = None) -> str:
 
 
 def status() -> dict:
+    wrapper_script = _resolve_sayro_script()
+    seedvc_dir = _resolve_seedvc_dir()
     s = {
         "tts_provider_env": settings.tts_provider,
         "active_provider": active_provider(),
@@ -325,8 +327,8 @@ def status() -> dict:
             "model": "sayro-seedvc",
             "seedvc_version": settings.seedvc_version,
             "diffusion_steps": settings.route_b_diffusion_steps,
-            "wrapper_script": str(_resolve_sayro_script()) if _resolve_sayro_script() else None,
-            "seedvc_dir": str(_resolve_seedvc_dir()) if _resolve_seedvc_dir() else None,
+            "wrapper_script": wrapper_script.name if wrapper_script else None,
+            "seedvc_dir": seedvc_dir.name if seedvc_dir else None,
             "daemon": {
                 "enabled": (not _daemon_disabled),
                 "running": False,
@@ -1348,8 +1350,9 @@ def _shutdown_daemon() -> None:
         _routeb_daemon = None
 
 
-# Define the compatibility alias only after its target exists.
-close_route_b_worker = _shutdown_daemon
+def close_route_b_worker() -> None:
+    """Close the current daemon during application shutdown."""
+    _shutdown_daemon()
 
 
 def _synthesize_via_daemon(text: str, work_dir: Path, timeout: float) -> bytes:
@@ -1576,4 +1579,3 @@ def enroll(sample_files: list, consent: str, name: str = "My voice") -> dict:
         }
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
-

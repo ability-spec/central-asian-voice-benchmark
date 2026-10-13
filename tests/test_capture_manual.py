@@ -74,9 +74,12 @@ def test_cancel_still_discards_capture():
     result = json.loads(run_node(fns + """
 let continuous = true, silentRunMs = 100, restartPending = true;
 let captureAction = 'send', processingInFlight = false, stops = 0;
+let currentAudio = null, currentAudioUrl = null;
 let mediaRecorder = {state:'recording', stop(){this.state='inactive'; stops++;}};
 function cancelStream() {}
 function stopVadLoop() {}
+function resetPlayButtons() {}
+function stopWaveform() {}
 endHandsFree();
 console.log(JSON.stringify({continuous, restartPending, captureAction, stops}));
 """))

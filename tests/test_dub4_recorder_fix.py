@@ -63,7 +63,7 @@ let statusTimer = { textContent: '', classList: { add(){}, remove(){} } };
 let statusMain = { textContent: '' }, statusHint = { textContent: '' };
 """
     p = subprocess.run(
-        ["node", "-e", preamble + body], capture_output=True, text=True, timeout=30)
+        ["node", "-e", preamble + body], capture_output=True, text=True, encoding="utf-8", timeout=30)
     assert p.returncode == 0, f"node failed: {p.stderr[:1500]}"
     return p.stdout.strip()
 

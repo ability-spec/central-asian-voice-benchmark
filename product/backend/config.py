@@ -79,14 +79,15 @@ class Settings:
     seedvc_reference_wav: str = field(
         default_factory=lambda: os.environ.get("SEEDVC_REFERENCE_WAV", "")
     )
-    # Seed-VC version + quality knobs. Defaults match the 74.86s / 5-sentence
-    # production benchmark (v2 persistent worker + target-cache, 15 steps,
-    # intelligibility/similarity 0.8). Override via env only when benchmarking.
+    # Seed-VC version + quality knobs.
+    # Uzbek listening-approved profile: v2 persistent worker + target cache,
+    # 10 steps, intelligibility/similarity 0.8. Set ROUTE_B_DIFFUSION_STEPS=15
+    # to restore the previous baseline; other quality settings are unchanged.
     seedvc_version: str = field(
         default_factory=lambda: os.environ.get("SEEDVC_VERSION", "v2")
     )
     route_b_diffusion_steps: int = field(
-        default_factory=lambda: int(os.environ.get("ROUTE_B_DIFFUSION_STEPS", "15"))
+        default_factory=lambda: int(os.environ.get("ROUTE_B_DIFFUSION_STEPS", "10"))
     )
     route_b_length_adjust: float = field(
         default_factory=lambda: float(os.environ.get("ROUTE_B_LENGTH_ADJUST", "1.0"))

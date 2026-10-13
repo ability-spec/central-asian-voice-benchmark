@@ -956,6 +956,7 @@ body{
         <div class="status-timer" id="statusTimer">0:00</div>
         <div class="status-hint" id="statusHint">Tap once to start &middot; tap again to stop</div>
         <button type="button" class="send-recording" id="sendRecordingBtn" onclick="stopRecording()" hidden>Send recording</button>
+        <button type="button" class="send-recording" id="stopSessionBtn" onclick="endHandsFree()" hidden>Stop</button>
       </div>
     </div>
 
@@ -1417,10 +1418,21 @@ function endHandsFree() {
   captureAction = 'discard';
   cancelStream();  // DUB2: a session end also aborts an in-flight stream
   stopVadLoop();
+  if (currentAudio) {
+    currentAudio.onended = null;
+    currentAudio.onerror = null;
+    currentAudio.pause();
+    currentAudio = null;
+  }
+  if (currentAudioUrl) { URL.revokeObjectURL(currentAudioUrl); currentAudioUrl = null; }
+  resetPlayButtons();
+  stopWaveform();
   if (mediaRecorder && mediaRecorder.state === 'recording') {
     stopCapture();           // onstop discards, releases mic, sets idle
   } else {
-    if (!processingInFlight) { releaseMic(); setState(STATE.IDLE); }
+    releaseMic(); setState(STATE.IDLE);
+    statusMain.textContent = 'Stopped';
+    statusHint.textContent = 'Playback stopped · connection closed · running server work may finish';
   }
 }
 
@@ -1506,6 +1518,7 @@ function setLang(lang) {
   if (state === STATE.IDLE) {
     statusMain.textContent = lang === 'uz' ? "Speak English → O'zbekcha" : 'Speak English → Қазақша';
   }
+  refreshVoiceStatus();
   if (benchmarkPanel && !benchmarkPanel.hidden) loadBenchmarkPrompts(lang);
 }
 
@@ -1742,8 +1755,8 @@ function _selectMyVoiceProvider(st) {
       provider: 'local-clone',
       label: 'Sayro + Seed-VC',
       title: 'Speak in my cloned voice (local Sayro + Seed-VC)',
-      activeLine: 'My cloned voice (' + (lc.model || 'sayro-seedvc') + ')',
-      readyLine: 'My cloned voice is ready — switch above',
+      activeLine: 'Local Uzbek voice (' + (lc.model || 'sayro-seedvc') + ') — models load on demand; cold start possible',
+      readyLine: 'Local voice configured — models load on demand',
       unconfiguredLine: 'Local clone not configured — using the standard voice',
     };
   }
@@ -1791,7 +1804,10 @@ async function refreshVoiceStatus() {
       if (!sel.provider) {
         el.textContent = sel.unconfiguredLine;
       } else if ((st.resolved_provider === 'local-clone') || (st.resolved_provider === 'elevenlabs')) {
-        el.textContent = sel.activeLine;
+        el.textContent = st.resolved_provider === 'local-clone' &&
+          !(st.local_clone.languages || ['uz']).includes(language)
+          ? 'Kazakh uses standard OpenAI voice — local clone supports Uzbek only'
+          : sel.activeLine;
       } else {
         el.textContent = sel.readyLine;
       }
@@ -1857,6 +1873,7 @@ function bargeIn() {
   cancelStream();  // DUB2: abort in-flight stream + drop queued parts (server cancels pending jobs)
   if (currentAudio) {
     try { currentAudio.onended = null; } catch (e) {}
+    try { currentAudio.onerror = null; } catch (e) {}
     try { currentAudio.pause(); } catch (e) {}
     currentAudio = null;
   }
@@ -2169,6 +2186,7 @@ async function sendRequest(formData) {
   let armed = false, doneData = null;
   try {
     const res = await fetch(API_BASE + '/api/turn/stream', {method:'POST', body:formData, signal:ctrl.signal});
+    if (streamCtrl !== ctrl || ctrl.signal.aborted) return;
     if (!res.ok) {
       let d = 'HTTP ' + res.status;
       try { const j = await res.json(); if (j && j.detail) d = j.detail; } catch (e) {}
@@ -2193,6 +2211,7 @@ async function sendRequest(formData) {
         bufTxt = bufTxt.slice(nl + 1);
         if (!line) continue;
         const ev = JSON.parse(line);
+        if (streamCtrl !== ctrl || ctrl.signal.aborted) return;
         if (doneData) throw new Error('Unexpected data after the completed dub.');
         if (ev.type === 'meta') {
           Object.assign(meta, ev);
@@ -2258,6 +2277,7 @@ function cancelStream() {
   streamCtrl = null;
   processingInFlight = false;
   dubQueue.active = false;
+  dubQueue.parts = [];
 }
 
 function pumpQueue() {
@@ -2457,6 +2477,7 @@ const ICONS = {
 };
 
 function setState(s) {
+  document.getElementById('stopSessionBtn').hidden = s === STATE.IDLE || s === STATE.ERROR;
   autoSendInput.disabled = s !== STATE.IDLE && s !== STATE.ERROR;
   sendRecordingBtn.hidden = s !== STATE.LISTENING && s !== STATE.RECORDING;
   if (state === s) return;
