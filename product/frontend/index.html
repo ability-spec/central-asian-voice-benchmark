@@ -1,309 +1,113 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>BirOvoz — Voice tool</title>
-<style>
-*{
-  box-sizing:border-box}
-  body{
-    margin:0;
-    background:#fafaf9;
-    color:#202321;
-    font:16px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}
-    button,input,a,audio,summary{
-      font:inherit}
-      button,a,summary{
-        touch-action:manipulation}
-        button{
-          border:1px solid #d5d8d5;
-          border-radius:6px;
-          background:white;
-          color:#202321;
-          padding:10px 16px;
-          cursor:pointer}
-          button:hover{
-            background:#eef1ee}
-            button:disabled{
-              opacity:.55;
-              cursor:not-allowed}
-              button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,audio:focus-visible{
-                outline:3px solid #1b684e;
-                outline-offset:3px}
-                [hidden]{
-                  display:none!important}
-                  a{
-                    color:#216348}
-                    main{
-                      max-width:920px;
-                      margin:auto;
-                      padding:36px 28px 60px}
-                      header{
-                        display:flex;
-                        justify-content:space-between;
-                        align-items:center;
-                        border-bottom:1px solid #ddd;
-                        padding-bottom:22px;
-                        margin-bottom:32px}
-                        h1{
-                          font-size:25px;
-                          letter-spacing:-.8px;
-                          margin:0}
-                          h2{
-                            font-size:20px;
-                            margin:0 0 10px}
-                            p{
-                              margin:8px 0}
-                              small,.muted{
-                                color:#5d645f}
-                                .mode{
-                                  font-size:13px;
-                                  color:#5d645f}
-                                  fieldset{
-                                    border:0;
-                                    margin:0;
-                                    padding:0}
-                                    legend{
-                                      font-weight:600;
-                                      margin-bottom:9px}
-                                      .selectors{
-                                        display:grid;
-                                        grid-template-columns:1fr 1fr;
-                                        gap:28px;
-                                        margin:25px 0}
-                                        .lang-row{
-                                          display:flex;
-                                          gap:8px;
-                                          flex-wrap:wrap}
-                                          .lang-btn.active{
-                                            border-color:#216348;
-                                            background:#e9f0eb;
-                                            color:#164c36}
-                                            .lang-en{
-                                              display:block;
-                                              font-size:12px;
-                                              color:#5d645f}
-                                              .capture-mode{
-                                                display:flex;
-                                                gap:9px;
-                                                align-items:center;
-                                                margin:18px 0}
-                                                .notice{
-                                                  font-size:14px;
-                                                  color:#4b554d;
-                                                  max-width:700px}
-                                                  .cost{
-                                                    background:#f0f1ed;
-                                                    border-left:3px solid #727968;
-                                                    padding:12px 16px;
-                                                    margin:24px 0 16px;
-                                                    font-size:14px}
-                                                    .actions{
-                                                      display:flex;
-                                                      align-items:center;
-                                                      gap:10px;
-                                                      flex-wrap:wrap}
-                                                      .mic-btn{
-                                                        background:#216348;
-                                                        border-color:#216348;
-                                                        color:white;
-                                                        font-weight:600;
-                                                        min-width:170px}
-                                                        .mic-btn:hover{
-                                                          background:#174c37}
-                                                          .mic-btn:disabled{
-                                                            background:#6a7c70}
-                                                            .status-area{
-                                                              margin-top:18px}
-                                                              .status-main{
-                                                                font-weight:600}
-                                                                .status-hint{
-                                                                  color:#5d645f;
-                                                                  font-size:14px}
-                                                                  .status-timer{
-                                                                    font-variant-numeric:tabular-nums;
-                                                                    color:#5d645f}
-                                                                    .waveform-canvas{
-                                                                      width:150px;
-                                                                      height:28px;
-                                                                      display:block;
-                                                                      margin:12px 0}
-                                                                      .error-card{
-                                                                        display:none;
-                                                                        border-left:3px solid #ac332e;
-                                                                        background:#fcf0ee;
-                                                                        padding:16px;
-                                                                        margin:20px 0}
-                                                                        .error-card.show{
-                                                                          display:block}
-                                                                          .error-actions{
-                                                                            display:flex;
-                                                                            gap:8px;
-                                                                            margin-top:12px}
-                                                                            #chat{
-                                                                              margin-top:28px}
-                                                                              .chat-empty{
-                                                                                padding:24px 0;
-                                                                                border-top:1px solid #ddd;
-                                                                                color:#5d645f}
-                                                                                .msg{
-                                                                                  padding:18px 0;
-                                                                                  border-top:1px solid #ddd}
-                                                                                  .msg-av{
-                                                                                    display:none}
-                                                                                    .msg-meta{
-                                                                                      display:flex;
-                                                                                      gap:12px;
-                                                                                      font-size:12px;
-                                                                                      font-weight:600;
-                                                                                      color:#5d645f;
-                                                                                      margin-bottom:6px}
-                                                                                      .msg-text{
-                                                                                        white-space:normal;
-                                                                                        overflow-wrap:anywhere}
-                                                                                        .result-player{
-                                                                                          display:block;
-                                                                                          width:100%;
-                                                                                          margin:14px 0}
-                                                                                          .result-actions{
-                                                                                            display:flex;
-                                                                                            gap:10px;
-                                                                                            flex-wrap:wrap}
-                                                                                            .result-details{
-                                                                                              margin:16px 0;
-                                                                                              font-size:14px}
-                                                                                              .result-details summary{
-                                                                                                cursor:pointer;
-                                                                                                color:#4c554e}
-                                                                                                .provider-line{
-                                                                                                  margin:12px 0}
-                                                                                                  .badge{
-                                                                                                    font-size:12px;
-                                                                                                    background:#eef0ed;
-                                                                                                    padding:2px 7px;
-                                                                                                    border-radius:3px}
-                                                                                                    .rc-head{
-                                                                                                      display:flex;
-                                                                                                      gap:12px;
-                                                                                                      flex-wrap:wrap}
-                                                                                                      .rc-grid{
-                                                                                                        display:grid;
-                                                                                                        grid-template-columns:repeat(3,1fr);
-                                                                                                        gap:14px;
-                                                                                                        margin-top:12px}
-                                                                                                        .rc-k{
-                                                                                                          font-size:12px;
-                                                                                                          color:#5d645f}
-                                                                                                          .rc-v{
-                                                                                                            font-weight:600}
-                                                                                                            .rc-badge{
-                                                                                                              color:#5d645f;
-                                                                                                              font-size:12px}
-                                                                                                              .app-foot{
-                                                                                                                margin-top:32px;
-                                                                                                                padding-top:18px;
-                                                                                                                border-top:1px solid #ddd;
-                                                                                                                font-size:13px;
-                                                                                                                color:#5d645f}
-                                                                                                                .rc-title{
-                                                                                                                  display:none}
-                                                                                                                  @media(max-width:600px){
-                                                                                                                    main{
-                                                                                                                      padding:24px 18px 40px}
-                                                                                                                      .selectors{
-                                                                                                                        grid-template-columns:1fr;
-                                                                                                                        gap:20px}
-                                                                                                                        header{
-                                                                                                                          align-items:flex-start;
-                                                                                                                          gap:16px}
-                                                                                                                          h1{
-                                                                                                                            font-size:23px}
-                                                                                                                            .actions button{
-                                                                                                                              flex:1}
-                                                                                                                              .rc-grid{
-                                                                                                                                grid-template-columns:repeat(2,1fr)}
-                                                                                                                              }
-                                                                                                                              .download-wav{
-                                                                                                                                display:inline-block;
-                                                                                                                                padding:10px 16px;
-                                                                                                                                border:1px solid #d5d8d5;
-                                                                                                                                border-radius:6px;
-                                                                                                                                color:#202321;
-                                                                                                                                text-decoration:none}
-                                                                                                                                .download-wav:hover{
-                                                                                                                                  background:#eef1ee}
-input[type="checkbox"] { accent-color:#216348; }
-</style>
-</head>
-<body>
-<main id="app">
-<header>
-<h1>BirOvoz</h1>
-<span class="mode">Live voice tool</span>
-</header>
-<section aria-labelledby="modeTitle">
-<h2 id="modeTitle">English dubbing</h2>
-<p class="muted">Record English speech. Listen to the translation in Uzbek or Kazakh.</p>
-<p class="notice">Text-to-speech input is not available in this version.</p>
-<div class="selectors">
-<fieldset>
-<legend>Translate to</legend>
-<div class="lang-row" role="group" aria-label="Dub to">
-<button class="lang-btn active" aria-pressed="true" data-lang="uz" onclick="setLang('uz')">O'zbekcha<span class="lang-en">Uzbek</span>
-</button>
-<button class="lang-btn" aria-pressed="false" data-lang="kk" onclick="setLang('kk')">Қазақша<span class="lang-en">Kazakh</span>
-</button>
-</div>
-</fieldset>
-<fieldset>
-<legend>Voice</legend>
-<div class="lang-row" role="group" aria-label="Voice provider">
-<button class="lang-btn" id="voiceBtnOpenai" data-voice="openai" onclick="setVoiceProvider('openai')">Standard<span class="lang-en">Cloud voice</span>
-</button>
-<button class="lang-btn" id="voiceBtnEleven" data-voice="local-clone" onclick="setVoiceProvider('local-clone')">My voice<span class="lang-en" id="voiceBtnMyVoiceSub">Checking availability</span>
-</button>
-</div>
-</fieldset>
-</div>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>BirOvoz — Voice workspace</title><style>
+
+* { box-sizing:border-box; }
+body { margin:0; background:#f6f6f3; color:#20211f; font:15px/1.6 system-ui,-apple-system,Segoe UI,sans-serif; }
+button,input,a,audio,summary { font:inherit; }
+button,a,summary { touch-action:manipulation; }
+button { border:1px solid #deded8; border-radius:9px; background:#fff; color:inherit; padding:11px 16px; cursor:pointer; }
+button:hover { background:#f1f1ed; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible,audio:focus-visible { outline:3px solid #545951; outline-offset:4px; }
+[hidden] { display:none!important; }
+a { color:#343b32; }
+input[type=checkbox] { accent-color:#20211f; }
+main { max-width:1180px; margin:auto; padding:32px 36px 48px; }
+.topbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:34px; }
+.brand { font-size:24px; font-weight:700; letter-spacing:-1px; text-decoration:none; }
+.live-label { color:#696d65; font-size:13px; }
+.intro { margin-bottom:24px; }
+.intro h1 { margin:0 0 6px; font-size:32px; font-weight:600; letter-spacing:-1.3px; }
+.intro p { color:#696d65; margin:0; }
+.studio { display:grid; grid-template-columns:245px minmax(0,1fr); border:1px solid #e0e0d9; border-radius:18px; overflow:hidden; background:white; }
+.settings { padding:28px 22px; background:#f0f0eb; border-right:1px solid #e0e0d9; }
+fieldset { border:0; margin:0 0 28px; padding:0; min-width:0; }
+legend { font-size:12px; font-weight:600; letter-spacing:.04em; color:#696d65; margin-bottom:12px; }
+.lang-row { display:flex; flex-direction:column; gap:7px; }
+.lang-btn { text-align:left; background:transparent; border-color:transparent; border-radius:9px; padding:12px 13px; }
+.lang-btn.active { background:white; border-color:#d4d5cd; }
+.lang-en { display:block; color:#72766d; font-size:12px; }
+.notice { color:#64695f; font-size:12px; margin:8px 0; }
+.capability-note { font-size:12px; color:#72766d; margin-top:30px; }
+.workspace { min-width:0; padding:30px 32px 24px; display:flex; flex-direction:column; }
+.workspace-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; margin-bottom:22px; }
+.workspace-heading h2 { font-size:17px; margin:0; font-weight:600; }
+.mode { font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:#72766d; }
+.status-area { display:flex; flex-wrap:wrap; column-gap:14px; align-items:baseline; }
+.status-main { font-size:19px; font-weight:500; letter-spacing:-.3px; }
+.status-timer { font-size:13px; font-variant-numeric:tabular-nums; color:#72766d; }
+.status-hint { flex-basis:100%; font-size:13px; color:#72766d; margin-top:5px; }
+.waveform-canvas { width:180px; height:28px; margin:10px 0; display:block; }
+#micStage:not(.active) .waveform-canvas { visibility:hidden; height:0; margin:0; }
+.results { flex:1; min-width:0; margin-top:22px; }
+.chat-empty { min-height:130px; padding:24px 0; color:#72766d; font-size:14px; }
+.chat-empty strong { display:block; color:#41473d; font-size:16px; font-weight:500; margin-bottom:6px; }
+.controls { border-top:1px solid #e8e8e2; padding-top:18px; margin-top:22px; }
+.capture-mode { display:flex; gap:8px; align-items:center; font-size:12px; color:#64695f; }
+.cost { font-size:12px; color:#64695f; margin:12px 0 18px; max-width:610px; }
+.actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:8px; }
+.mic-btn { background:#20211f; color:white; border-color:#20211f; font-weight:500; min-width:175px; border-radius:24px; }
+.mic-btn:hover { background:#393c35; }
+.mic-btn:disabled { background:#74786e; }
+.error-card { display:none; border-left:2px solid #a33d33; padding:12px 16px; margin:18px 0; background:#fff5f3; }
+.error-card.show { display:block; }
+.error-actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+.msg { border-top:1px solid #e8e8e2; padding:18px 0; }
+.msg-meta { display:flex; flex-wrap:wrap; gap:8px; font-size:11px; color:#72766d; margin-bottom:7px; }
+.msg-text { overflow-wrap:anywhere; }
+.result-player { width:100%; display:block; margin:16px 0 10px; }
+.result-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.result-actions button,.download-wav { padding:7px 12px; font-size:12px; border-radius:7px; }
+.download-wav { border:1px solid #deded8; color:#20211f; text-decoration:none; display:inline-block; }
+.download-wav:hover { background:#f1f1ed; }
+.play-again svg { width:12px; height:12px; margin-right:5px; }
+.badge { background:#ededdf; color:#41473d; padding:1px 6px; border-radius:3px; }
+.result-details { font-size:12px; margin-top:16px; color:#64695f; }
+.result-details summary { cursor:pointer; }
+.provider-line { margin:12px 0; }
+.rc-head { display:flex; flex-wrap:wrap; gap:8px; }
+.rc-title { display:none; }
+.rc-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin:12px 0; }
+.rc-k { color:#72766d; font-size:11px; }
+.rc-v { color:#41473d; font-weight:600; }
+.app-foot { color:#72766d; font-size:11px; margin-top:22px; }
+@media (max-width:700px) {
+  main { padding:22px 16px 32px; }
+  .topbar { margin-bottom:24px; }
+  .intro h1 { font-size:27px; }
+  .studio { grid-template-columns:1fr; }
+  .settings { border-right:0; border-bottom:1px solid #e0e0d9; padding:18px; display:grid; grid-template-columns:1fr 1fr; column-gap:12px; }
+  fieldset { margin-bottom:12px; }
+  .notice,.capability-note { grid-column:1/-1; margin:5px 0; }
+  .workspace { padding:22px 18px; }
+  .actions .mic-btn { flex:1; }
+  .rc-grid { grid-template-columns:repeat(2,1fr); }
+}
+</style></head><body><main id="app">
+<header class="topbar"><a class="brand" href="/" aria-label="BirOvoz home">BirOvoz</a><span class="live-label">Live voice tool</span></header>
+<div class="intro"><h1>Voice workspace</h1><p>English speech. Uzbek or Kazakh voice.</p></div>
+<div class="studio">
+<aside class="settings" aria-label="Voice settings">
+<fieldset><legend>TRANSLATE TO</legend><div class="lang-row" role="group" aria-label="Dub to">
+<button class="lang-btn active" aria-pressed="true" data-lang="uz" onclick="setLang('uz')">O'zbekcha<span class="lang-en">Uzbek</span></button>
+<button class="lang-btn" aria-pressed="false" data-lang="kk" onclick="setLang('kk')">Қазақша<span class="lang-en">Kazakh</span></button>
+</div></fieldset>
+<fieldset><legend>VOICE</legend><div class="lang-row" role="group" aria-label="Voice provider">
+<button class="lang-btn" id="voiceBtnEleven" data-voice="local-clone" onclick="setVoiceProvider('local-clone')">My voice<span class="lang-en" id="voiceBtnMyVoiceSub">Checking availability</span></button>
+<button class="lang-btn" id="voiceBtnOpenai" data-voice="openai" onclick="setVoiceProvider('openai')">Standard<span class="lang-en">Cloud voice</span></button>
+</div></fieldset>
 <p class="notice" id="voiceStatus" role="status">Checking voice availability…</p>
-<label class="capture-mode">
-<input type="checkbox" id="autoSendInput" checked>Send automatically after a pause</label>
-<p class="cost" id="costNotice">Recording and Retry send audio to paid OpenAI transcription and translation APIs. Standard voice also uses paid TTS. Local Uzbek voice may have a cold start.</p>
-<div id="micStage">
-<div id="progressRing" hidden>
-</div>
-<div class="actions">
-<button class="mic-btn" id="micBtn" onclick="toggleMic()" aria-label="Start recording">
-<span id="micLabel">Start recording</span>
-<span id="micIcon" hidden>
-</span>
-</button>
-<button id="sendRecordingBtn" onclick="stopRecording()" hidden>Send recording</button>
-<button id="stopSessionBtn" onclick="endHandsFree()" hidden>Stop</button>
-</div>
-<canvas id="waveCanvas" class="waveform-canvas" aria-hidden="true">
-</canvas>
-<div class="status-area" role="status" aria-live="polite">
-<div id="statusMain" class="status-main">Ready to record</div>
-<div id="statusTimer" class="status-timer">0:00</div>
-<div id="statusHint" class="status-hint">Your microphone will open when you start.</div>
-</div>
-</div>
-</section>
-<div class="error-card" id="errorCard" role="alert">
-<div id="errorMsg">
-</div>
-<div class="error-actions">
-<button onclick="retryLast()">Retry paid request</button>
-<button onclick="hideError()">Dismiss</button>
-</div>
-</div>
-<section aria-label="Session results">
-<div id="chat">
-<div id="chatEmpty" class="chat-empty">Your transcript, translation and audio will appear here.</div>
-</div>
-</section>
+<p class="capability-note">Text-to-speech input is not available in this version.</p>
+</aside>
+<section class="workspace" aria-labelledby="modeTitle">
+<div class="workspace-heading"><h2 id="modeTitle">English dubbing</h2><span class="mode">Microphone → voice</span></div>
+<div id="micStage"><div id="progressRing" hidden></div><div class="status-area" role="status" aria-live="polite"><div class="status-main" id="statusMain">Ready to record</div><div class="status-timer" id="statusTimer">0:00</div><div class="status-hint" id="statusHint">Your microphone will open when you start.</div></div><canvas id="waveCanvas" class="waveform-canvas" aria-hidden="true"></canvas></div>
+<div class="error-card" id="errorCard" role="alert"><div id="errorMsg"></div><div class="error-actions"><button onclick="retryLast()">Retry paid request</button><button onclick="hideError()">Dismiss</button></div></div>
+<section class="results" aria-label="Session results"><div id="chat"><div id="chatEmpty" class="chat-empty"><strong>Start with an English recording</strong>Your transcript, translation and audio will appear here.</div></div></section>
+<div class="controls"><label class="capture-mode"><input type="checkbox" id="autoSendInput" checked>Send automatically after a pause</label>
+<p class="cost">Recording and Retry send audio to paid OpenAI transcription and translation APIs. Standard voice also uses paid TTS. Local Uzbek voice may have a cold start.</p>
+<div class="actions"><button id="stopSessionBtn" onclick="endHandsFree()" hidden>Stop</button><button id="sendRecordingBtn" onclick="stopRecording()" hidden>Send recording</button><button class="mic-btn" id="micBtn" onclick="toggleMic()" aria-label="Start recording"><span id="micLabel">Start recording</span><span id="micIcon" hidden></span></button></div></div>
+</section></div>
 <footer class="app-foot">Live session results are not the frozen benchmark. No benchmark data is changed by this tool.</footer>
 </main><script>
 /* ═══════════════════════════════════════════════════════════
