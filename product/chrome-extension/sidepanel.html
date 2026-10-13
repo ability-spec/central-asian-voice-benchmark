@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>BirOvoz</title>
+  <link rel="stylesheet" href="panel.css">
+  <script type="module" src="panel.js"></script>
+</head>
+<body>
+<main>
+  <header><a class="wordmark" href="sidepanel.html">BirOvoz<span>LOCAL</span></a><button id="newSession" class="quiet" type="button">Новая сессия</button></header>
+  <section class="intro"><p class="eyebrow">ГОЛОСОВОЙ ПЕРЕВОД</p><h1>Говори на английском.<br>Слушай на своём языке.</h1><p class="muted">Запиши фразу или загрузи аудио. BirOvoz переведёт и озвучит её.</p></section>
+
+  <div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionLabel">Проверяем подключение…</span><button id="reconnect" class="quiet" type="button">Обновить</button></div>
+
+  <section class="settings-grid" aria-label="Настройки озвучки">
+    <label>Язык ответа<select id="language"><option value="uz">O‘zbekcha · Uzbek</option><option value="kk">Қазақша · Kazakh</option></select></label>
+    <label>Голос<select id="voice" disabled><option value="">Проверяем…</option></select></label>
+  </section>
+  <p class="small muted" id="voiceHint">Голос определяется настройками локального сервера.</p>
+
+  <section class="capture" aria-label="Запись английской речи">
+    <div class="capture-title"><span>АНГЛИЙСКОЕ АУДИО</span><span id="recordTime">00:00</span></div>
+    <div class="input-actions"><button id="record" class="primary" type="button">Записать фразу</button><button id="stop" class="secondary" type="button" disabled>Stop</button></div>
+    <button id="sendRecording" class="secondary wide" type="button" hidden>Завершить запись</button>
+    <div class="file-row"><label class="file-picker">Загрузить файл<input id="file" type="file" accept="audio/*,.wav,.webm,.mp3,.m4a,.ogg,.flac"></label><span id="fileName" class="small muted">Файл не выбран</span></div>
+    <audio id="inputPreview" controls preload="metadata" hidden aria-label="Прослушать входную запись"></audio>
+    <p id="limits" class="small muted">До 30 секунд · до 10 МБ. Отправка только по кнопке.</p>
+    <button id="micPermission" class="quiet" type="button">Разрешение микрофона</button>
+  </section>
+
+  <div id="costBox" class="cost-box"><label class="check"><input id="consent" type="checkbox"><span>Разрешаю платный запрос через API, настроенные в BirOvoz.</span></label><p class="small muted">Даже с локальным голосом распознавание и перевод могут быть платными. При сбое TTS возможен облачный fallback.</p></div>
+  <button id="send" class="primary wide" type="button" disabled>Перевести и озвучить</button>
+  <div class="status" role="status" aria-live="polite"><strong id="statusTitle">Готово к записи</strong><p id="statusDetail" class="small muted">Сначала подключите локальный сервер.</p></div>
+
+  <section id="result" class="result" hidden>
+    <div class="result-heading"><h2>Результат</h2><span id="resultBadge" class="badge"></span></div>
+    <p class="eyebrow">ИСХОДНЫЙ ТЕКСТ</p><p id="transcript" class="text-block"></p>
+    <p class="eyebrow">ПЕРЕВОД</p><p id="translation" class="text-block"></p>
+    <p id="playbackLabel" class="small muted"></p>
+    <audio id="player" controls preload="metadata" aria-label="Озвученный перевод"></audio>
+    <div class="result-actions"><button id="replay" class="secondary" type="button" disabled>Воспроизвести</button><a id="download" class="button secondary" download="birovoz.wav" hidden>Скачать WAV</a></div>
+    <details><summary>Детали результата</summary><dl id="metrics"></dl></details>
+  </section>
+
+  <details class="preferences"><summary>Подключение и проверка</summary>
+    <label>Адрес локального BirOvoz<input id="backendUrl" type="url" value="http://127.0.0.1:8000" spellcheck="false"></label>
+    <button id="saveSettings" class="secondary" type="button">Сохранить и подключить</button>
+    <p class="small muted">Только localhost или 127.0.0.1. Сервер должен работать на этом компьютере. API-ключи сюда не вводятся.</p>
+    <button id="demo" class="secondary wide" type="button">Демо плеера · без API</button>
+    <p class="small muted">Фиксированный текст и тестовые звуки. Без распознавания, перевода и клонирования.</p>
+  </details>
+  <footer>Микрофон работает только во время записи. Stop прекращает выдачу и воспроизведение; начатые вычисления сервера могут продолжиться.</footer>
+</main>
+</body>
+</html>
