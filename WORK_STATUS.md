@@ -306,3 +306,40 @@ $env:SAYRO_MODEL_PATH = 'C:\Users\erkin\.cache\huggingface\hub\models--uzlm--say
 - Thirty targeted regressions passed in 7.56 s: frontend UI/native-player regression, cancellation races, VAD, continuous recording, recorder validity and JS syntax. Script identity assertion additionally confirms logic unchanged. `git diff --check` passes.
 - Ignored screenshot artifacts: logs/studio_layout/desktop.png, mobile.png, desktop-replay.png, mobile-replay.png. Temporary viewport reset. No audio/model generation, paid API, external edits or dependencies.
 - Local commit scope: product/frontend/index.html and WORK_STATUS.md only; no runtime screenshots/replay/scripts, secrets, models, audio or original untracked files. No push. Current capability limits remain unchanged.
+
+
+## Uzbek cultural background draft, 2026-10-13
+- User requested less generic AI styling and an Uzbek cultural background using the supplied scenic reference. Added original built-in ImageGen illustration inspired by Samarkand: ceramic turquoise domes, sand-colored architecture, spring blossoms and pomegranate foliage. This is a stylized illustration, not a documentary photograph.
+- Local project asset: product/frontend/assets/samarkand-background.png (2,676,665 bytes). Warm opaque workspace/sidebar, restrained green primary action and serif Ovoz ustaxonasi heading. Background has no interactions; plain light fallback remains. Footer uses opaque surface for contrast.
+- Existing script verified byte-for-byte identical to HEAD. Backend, models, diffusion steps, paid-call notice, provider/MOCK/fallback labels, Stop/VAD/stream/player/download unchanged.
+- 29 frontend UI/cancellation/VAD/recorder regressions passed (6.69 s); git diff --check passes. No new low-impact style-only tests added. Real browser checked desktop/default and 390px viewport: no horizontal overflow (390 viewport / 375 document). Viewport reset. Screenshots ignored under logs/uz_background/desktop.png and mobile.png.
+- Original server was stopped; started existing FastAPI on 127.0.0.1:8000, hidden launcher PID19072 / uvicorn PID17168. GET-only UI inspection, no recording/paid API/model synthesis. Built-in ImageGen used without project API key; no CLI fallback.
+- Draft changes remain uncommitted on codex/minimal-voice-interface for user visual evaluation. No push; published demo/PR #5 unaffected. Original untracked files preserved.
+
+
+## Font and logo option, 2026-10-13
+- User requested a different font and a logo option. Switched UI/headings to locally installed Trebuchet MS with Segoe UI/sans-serif fallback; no font downloads, remote requests or redistribution of Windows font files.
+- Added editable SVG concept product/frontend/assets/birovoz-arch.svg: architectural arch enclosing three voice strokes, flat muted green. Logo image has empty alt because adjacent wordmark and home link already supply accessible name. Proposal is visible in header, not a finalized brand commitment.
+- Browser confirmed asset loaded, desktop and 390px layout with no horizontal overflow; mobile mark 36px. Viewport reset. Screenshots: logs/uz_background/font-logo-desktop.png and font-logo-mobile.png (ignored). Application script remains identical to HEAD; diff check passes. Earlier 29 frontend tests remain applicable, no new tests or repeated model checks for typography-only change.
+- Changes remain local/uncommitted with background draft; no paid API, synthesis, dependencies, commit or push.
+
+
+## Registan welcome + workspace mix, 2026-10-13
+- User requested combining the supplied scenic upper page with the tool below. Earlier no-hero preference superseded for this visual draft: scenic welcome section using existing original Samarkand illustration, arch wordmark, compact dark navigation, Open workspace/How it works anchors; actual dubbing workspace follows on plain cream background.
+- No fake navigation/products/voices/video controls. Welcome links only scroll to existing tool or factual explanation. Paid-call disclosure remains before recording; cold startup, standard Kazakh voice and Stop limitations retained. Existing script identical to HEAD; no backend/API changes or synthesis.
+- 29 frontend/cancellation/VAD/recorder regressions passed (5.75 s). Browser desktop and 390px mobile checked with no horizontal overflow (375 document / 390 viewport). Open workspace changes hash to #voice-workspace; state remains Ready to record, no microphone or paid call. Reduced-motion preference disables smooth scroll. Viewport reset.
+- Ignored screenshots: logs/uz_background/registan-mix-desktop.png, registan-mix-top.png, registan-mix-mobile.png, registan-mix-workspace.png. Reused background and SVG; no new generation/API/download.
+- Draft remains local/uncommitted for user review; no push; published demo remains separate.
+
+
+## BirOvoz title and Uzbek interface, 2026-10-13
+- User liked logo and requested removal of both Samarkand attribution badges. Removed them; hero title BirOvoz and slogan Biz ovozlarni siz uchun birlashtiramiz. Logo/background retained.
+- Added real UZ/EN interface toggle, Uzbek default. Local assets/ui-language.js translates known static labels and common dynamic statuses, using original text-node sources to restore English. Audio/transcript/translation content and raw diagnostic errors remain verbatim. Provider identifiers and MOCK/fallback reporting not rewritten. UI locale is independent of synthesis language; no network calls or persistence added.
+- Browser verified UZ -> EN -> UZ, translated navigation/controls/cold-start/paid notice; voice selection remained uz. At 390px document width375, no horizontal overflow. 29 existing frontend regressions plus one new locale regression passed (30 total). Locale test covers content preservation, dynamic status restoration, no network calls and unchanged voice language. Main application script remains byte-for-byte identical to HEAD; separate locale script appended. diff check passes.
+- Local draft remains uncommitted, no push, paid API or synthesis. Backend/external projects unchanged. Not all possible server errors/provider diagnostics are localized; they remain original for accuracy.
+
+
+## Frontend publication to existing demo authorized, 2026-10-13
+- User requested publishing the current frontend, then explicitly chose the existing demo branch instead of creating another branch. Interrupted separate-frontend publication made no commit or remote branch.
+- Save six-file frontend scope (index, three assets, locale test, status document), then integrate in the existing isolated demo-pr5-merge worktree to preserve current demo backend/CI fixes and original untracked files in the working folder.
+- Frontend includes the accepted Registan illustration, arch logo, BirOvoz slogan and UZ/EN interface toggle. No paid API/model calls, new dependencies or external project changes. Original untracked files, secrets, models, references, audio and logs excluded.
