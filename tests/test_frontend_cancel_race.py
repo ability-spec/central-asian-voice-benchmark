@@ -61,15 +61,16 @@ class Audio {
 
 @pytest.mark.skipif(shutil.which('node') is None, reason='node required')
 def test_cancelled_stream_does_not_reset_next_request():
-    script = """
+    script = r"""
 let streamCtrl=null,processingInFlight=false,dubQueue={active:false};
 const API_BASE='',STATE={ERROR:'error',SPEAKING:'speaking'};
-let state='processing',turnNumber=0;const statusHint={};
+let state='processing',turnNumber=0,currentAudio=null;const statusHint={};
+function onTurnFinished(){}
 function setState(s){state=s;}function showError(e){throw Error(e);}
 function pumpQueue(){}function playQueueNext(){}function displayTurn(){}
 const pending=[];
 function fetch(){return new Promise((resolve,reject)=>pending.push({resolve,reject}));}
-""" + 'async ' + function_source('sendRequest') + '\n' + function_source('cancelStream') + """
+""" + 'async ' + function_source('sendRequest') + '\n' + function_source('cancelStream') + r"""
 (async()=>{
  const old=sendRequest(new FormData());cancelStream();
  const next=sendRequest(new FormData());const nextCtrl=streamCtrl;
@@ -77,7 +78,9 @@ function fetch(){return new Promise((resolve,reject)=>pending.push({resolve,reje
  await old;
  if(!processingInFlight || streamCtrl!==nextCtrl || !dubQueue.active)
    throw Error('old stream reset the next request');
- pending[1].resolve({ok:true,body:{getReader:()=>({read:async()=>({done:true})})}});
+ let delivered=false;
+ const payload=new TextEncoder().encode(JSON.stringify({type:'part',index:0,audio:'YQ==',text:'Salom'})+'\n'+JSON.stringify({type:'done',turn_number:1,audio:'YQ==',response_text:'Salom',language:'uz'})+'\n');
+ pending[1].resolve({ok:true,body:{getReader:()=>({read:async()=>{if(delivered)return {done:true};delivered=true;return {done:false,value:payload};},cancel:async()=>{}})}});
  await next;
  if(processingInFlight || streamCtrl)throw Error('next stream did not finish');
  console.log('OK');

@@ -19,6 +19,7 @@ import subprocess
 import threading
 import time
 import uuid
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -41,6 +42,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["turn"])
 
+AUDIO_CONVERSION_TIMEOUT_S = 30
+
 # Allowed audio MIME types
 ALLOWED_AUDIO_TYPES = {
     "audio/wav",
@@ -59,6 +62,7 @@ async def _to_wav(src_path: Path, dst_path: Path) -> None:
     """Normalize any browser audio to 16 kHz mono 16-bit PCM WAV via ffmpeg."""
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-i", str(src_path),
         "-ar", "16000",
@@ -67,37 +71,101 @@ async def _to_wav(src_path: Path, dst_path: Path) -> None:
         "-f", "wav",
         str(dst_path),
     ]
-    proc = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: subprocess.run(cmd, capture_output=True, text=True)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
+    try:
+        _, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=AUDIO_CONVERSION_TIMEOUT_S
+        )
+    except BaseException:
+        if proc.returncode is None:
+            proc.kill()
+        await proc.wait()
+        raise
     if proc.returncode != 0:
-        raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()}")
+        raise RuntimeError(f"ffmpeg failed: {stderr.decode(errors='replace').strip()}")
     if not dst_path.exists() or dst_path.stat().st_size == 0:
         raise RuntimeError("ffmpeg produced empty output WAV")
 
 
 def _get_audio_duration_seconds(file_bytes: bytes, content_type: str) -> float:
-    """Estimate audio duration via ffprobe for accuracy."""
+    """Read PCM WAV timing from its header; probe other audio containers."""
     import tempfile, os
-    if "wav" not in content_type:
-        with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
+    # Read the container rather than assuming 16 kHz mono PCM. Browsers and
+    # uploaded recordings can use other rates, channel counts and bit depths.
+    try:
+        with wave.open(io.BytesIO(file_bytes), "rb") as wav:
+            return wav.getnframes() / wav.getframerate()
+    except (wave.Error, EOFError):
+        pass  # Compressed/float WAV and other containers need ffprobe.
+    with tempfile.NamedTemporaryFile(suffix=".audio", delete=False) as tmp:
+        tmp.write(file_bytes)
+        tmp_path = tmp.name
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", tmp_path],
+            capture_output=True, text=True, timeout=5
+        )
+        val = result.stdout.strip()
+        return float(val) if val else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        try: os.unlink(tmp_path)
+        except Exception: pass
+
+
+def _check_normalized_duration(wav_path: Path) -> None:
+    # WebM recordings often omit container duration; decoded PCM is authoritative.
+    duration = _get_audio_duration_seconds(wav_path.read_bytes(), "audio/wav")
+    if duration > settings.max_audio_duration_seconds:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Audio too long ({duration:.1f}s). Max {settings.max_audio_duration_seconds}s.",
+        )
+
+
+async def _read_bounded_audio(audio):
+    limit = int(settings.max_audio_size_mb * 1024 * 1024)
+    # UploadFile may already be spooled by the ASGI multipart parser. Bound the
+    # additional application allocation; ingress body limits remain a deployment concern.
+    data = await audio.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(status_code=413, detail=f"Audio too large. Max {settings.max_audio_size_mb} MB.")
+    return data
+
+
+async def _blocking(fn, *args):
+    """Keep the loop responsive, but finish file users before cancellation cleanup."""
+    task = asyncio.create_task(asyncio.to_thread(fn, *args))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue  # repeated disconnect cancellation must not race cleanup
+            except Exception:
+                break
+        if not task.cancelled():
+            task.exception()  # retrieve a worker failure without replacing cancellation
+        raise
+
+
+def _cleanup_audio(*paths):
+    for path in paths:
         try:
-            result = subprocess.run(
-                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-                 "-of", "default=noprint_wrappers=1:nokey=1", tmp_path],
-                capture_output=True, text=True, timeout=5
-            )
-            val = result.stdout.strip()
-            return float(val) if val else 0.0
-        except Exception:
-            return 0.0
-        finally:
-            try: os.unlink(tmp_path)
-            except Exception: pass
-    data_bytes = max(0, len(file_bytes) - 44)
-    return data_bytes / 32000.0
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary audio %s", path)
+
+
+def _synthesize_with_report(text, language):
+    data = synthesize_b64(text, language)
+    return data, take_last_report()
 
 
 @router.post("/turn")
@@ -156,7 +224,7 @@ async def handle_turn(
         # Don't block — let the provider handle unknown types
 
     # --- 3. Read and validate audio ---
-    audio_bytes = await audio.read()
+    audio_bytes = await _read_bounded_audio(audio)
     if len(audio_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty audio file.")
 
@@ -167,7 +235,7 @@ async def handle_turn(
         )
 
     # Rough duration check
-    estimated_duration = _get_audio_duration_seconds(audio_bytes, audio.content_type or "audio/wav")
+    estimated_duration = await _blocking(_get_audio_duration_seconds, audio_bytes, audio.content_type or "audio/wav")
     if estimated_duration > settings.max_audio_duration_seconds:
         raise HTTPException(
             status_code=413,
@@ -185,160 +253,160 @@ async def handle_turn(
     # --- 5. Save uploaded audio ---
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     ext = "webm" if audio.content_type and "webm" in audio.content_type else "wav"
-    safe_filename = f"{request_id}_{conversation_id}_{language}_raw.{ext}"
+    safe_filename = f"{request_id}_{language}_raw.{ext}"
     raw_path = settings.upload_dir / safe_filename
-    wav_path = settings.upload_dir / f"{request_id}_{conversation_id}_{language}_norm.wav"
-    with open(raw_path, "wb") as f:
-        f.write(audio_bytes)
-    logger.info("[%s] Audio saved to %s (%s, %d bytes)", request_id, raw_path, audio.content_type, len(audio_bytes))
-
-    # Normalize to 16 kHz mono 16-bit PCM WAV for STT
+    wav_path = settings.upload_dir / f"{request_id}_{language}_norm.wav"
     try:
-        await _to_wav(raw_path, wav_path)
-    except Exception as e:
-        logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
-        raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
+        with open(raw_path, "wb") as f:
+            f.write(audio_bytes)
+        logger.info("[%s] Audio saved to %s (%s, %d bytes)", request_id, raw_path, audio.content_type, len(audio_bytes))
 
-    # --- 6. STT (in stt_lang: 'en' for dubbing, else the target language) ---
-    t0 = time.time()
-    try:
-        transcript = transcribe(wav_path, stt_lang, "audio/wav")
-    except Exception as e:
-        logger.error("[%s] STT failed: %s", request_id, str(e))
-        raise HTTPException(status_code=502, detail="Speech transcription failed. Please try again.")
-    stt_time = time.time() - t0
-    logger.info("[%s] STT (%s): %.2fs | transcript=%r", request_id, stt_lang, stt_time, transcript[:80])
+        # Normalize to 16 kHz mono 16-bit PCM WAV for STT
+        try:
+            await _to_wav(raw_path, wav_path)
+        except Exception as e:
+            logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
+            raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
 
-    # --- 7. LLM: dub mode translates (stateless), chat mode converses ---
-    t0 = time.time()
-    dub_parts: list = []
-    try:
-        if is_dub:
-            # DUB3: per-sentence translations enable overlapping per-part TTS.
-            # Single sentence -> exactly the DUB1 behaviour.
-            dub_parts = translate_multi(transcript, stt_lang, language)
-            response_text = " ".join(dub_parts)
-            # Dubbing itself is stateless, but we still record the exchange so
-            # turn numbering and the per-session turn cap keep working for the UI.
-            session_manager.add_turn(conversation_id, "user", transcript)
-            session_manager.add_turn(conversation_id, "assistant", response_text)
-        else:
-            response_text = respond(conversation_id, transcript, language)
-    except Exception as e:
-        logger.error("[%s] LLM failed: %s", request_id, str(e))
-        raise HTTPException(status_code=502, detail="Response generation failed. Please try again.")
-    llm_time = time.time() - t0
-    logger.info("[%s] LLM (%s): %.2fs | response=%r", request_id, language, llm_time, response_text[:80])
+        await _blocking(_check_normalized_duration, wav_path)
 
-    # --- 8. TTS (DUB3: dub parts are synthesized concurrently in the
-    #     default executor — same thread-pool pattern as _to_wav — so the
-    #     wall time is ~ the longest sentence, not the sum of all of them).
-    #     Each part's provider report is captured from thread-local storage
-    #     immediately after synthesize_b64 returns so that provider_info
-    #     stays truthful across per-part fallbacks (e.g. one sentence
-    #     hitting an OpenAI fallback is honestly reported as openai).
-    #     Legacy 2-arg synthesize_b64(text, lang) seam preserved. ---
-    t0 = time.time()
-    audio_parts: list = []
-    tts_report: dict = {}
-    try:
-        if is_dub and len(dub_parts) > 1:
-            loop = asyncio.get_running_loop()
-            part_reports: list = [dict() for _ in dub_parts]
+        # --- 6. STT (in stt_lang: 'en' for dubbing, else the target language) ---
+        t0 = time.time()
+        try:
+            transcript = await _blocking(transcribe, wav_path, stt_lang, "audio/wav")
+        except Exception as e:
+            logger.error("[%s] STT failed: %s", request_id, str(e))
+            raise HTTPException(status_code=502, detail="Speech transcription failed. Please try again.")
+        if not isinstance(transcript, str) or not transcript.strip():
+            raise HTTPException(status_code=422, detail="No speech detected. Please record a clear sentence and try again.")
+        transcript = transcript.strip()
+        stt_time = time.time() - t0
+        logger.info("[%s] STT (%s): %.2fs | transcript=%r", request_id, stt_lang, stt_time, transcript[:80])
 
-            def _synth_part(idx: int, text_part: str):
-                audio = synthesize_b64(text_part, language)
-                part_reports[idx] = take_last_report()
-                return audio
+        # --- 7. LLM: dub mode translates (stateless), chat mode converses ---
+        t0 = time.time()
+        dub_parts: list = []
+        try:
+            if is_dub:
+                # DUB3: per-sentence translations enable overlapping per-part TTS.
+                # Single sentence -> exactly the DUB1 behaviour.
+                dub_parts = await _blocking(translate_multi, transcript, stt_lang, language)
+                response_text = " ".join(dub_parts)
+                # Dubbing itself is stateless, but we still record the exchange so
+                # turn numbering and the per-session turn cap keep working for the UI.
+                session_manager.add_turn(conversation_id, "user", transcript)
+                session_manager.add_turn(conversation_id, "assistant", response_text)
+            else:
+                response_text = await _blocking(respond, conversation_id, transcript, language)
+        except Exception as e:
+            logger.error("[%s] LLM failed: %s", request_id, str(e))
+            raise HTTPException(status_code=502, detail="Response generation failed. Please try again.")
+        llm_time = time.time() - t0
+        logger.info("[%s] LLM (%s): %.2fs | response=%r", request_id, language, llm_time, response_text[:80])
 
-            audio_parts = list(
-                await asyncio.gather(
-                    *(
-                        loop.run_in_executor(None, _synth_part, i, part)
-                        for i, part in enumerate(dub_parts)
+        # --- 8. TTS (DUB3: dub parts are synthesized concurrently in the
+        #     default executor — same thread-pool pattern as _to_wav — so the
+        #     wall time is ~ the longest sentence, not the sum of all of them).
+        #     Each part's provider report is captured from thread-local storage
+        #     immediately after synthesize_b64 returns so that provider_info
+        #     stays truthful across per-part fallbacks (e.g. one sentence
+        #     hitting an OpenAI fallback is honestly reported as openai).
+        #     Legacy 2-arg synthesize_b64(text, lang) seam preserved. ---
+        t0 = time.time()
+        audio_parts: list = []
+        tts_report: dict = {}
+        try:
+            if is_dub and len(dub_parts) > 1:
+                loop = asyncio.get_running_loop()
+                part_reports: list = [dict() for _ in dub_parts]
+
+                def _synth_part(idx: int, text_part: str):
+                    audio = synthesize_b64(text_part, language)
+                    part_reports[idx] = take_last_report()
+                    return audio
+
+                audio_parts = list(
+                    await asyncio.gather(
+                        *(
+                            loop.run_in_executor(None, _synth_part, i, part)
+                            for i, part in enumerate(dub_parts)
+                        )
                     )
                 )
-            )
-            tts_report = _merge_part_reports(part_reports)
-            # Backward-compatible single-audio field: the full concatenated dub.
-            audio_b64 = concat_wav_b64(audio_parts)
-        else:
-            audio_b64 = synthesize_b64(response_text, language)
-            tts_report = take_last_report()
-    except Exception as e:
-        logger.error("[%s] TTS failed: %s", request_id, str(e))
-        raise HTTPException(status_code=502, detail="Audio synthesis failed. Please try again.")
-    tts_time = time.time() - t0
-    logger.info("[%s] TTS: %.2fs | parts=%d | audio size=%d bytes",
-                request_id, tts_time, len(audio_parts), len(audio_b64))
+                tts_report = _merge_part_reports(part_reports)
+                # Backward-compatible single-audio field: the full concatenated dub.
+                audio_b64 = concat_wav_b64(audio_parts)
+            else:
+                audio_b64, tts_report = await _blocking(_synthesize_with_report, response_text, language)
+        except Exception as e:
+            logger.error("[%s] TTS failed: %s", request_id, str(e))
+            raise HTTPException(status_code=502, detail="Audio synthesis failed. Please try again.")
+        tts_time = time.time() - t0
+        logger.info("[%s] TTS: %.2fs | parts=%d | audio size=%d bytes",
+                    request_id, tts_time, len(audio_parts), len(audio_b64))
 
-    # --- 9. Score transcript against the optional reference ---
-    scoring = score_transcript(reference_text, transcript)
+        # --- 9. Score transcript against the optional reference ---
+        scoring = score_transcript(reference_text, transcript)
 
-    # --- 10. Build response ---
-    turn_number = session_manager.get_turn_count(conversation_id)
-    stt_ms = round(stt_time * 1000)
-    llm_ms = round(llm_time * 1000)
-    tts_ms = round(tts_time * 1000)
+        # --- 10. Build response ---
+        turn_number = session_manager.get_turn_count(conversation_id)
+        stt_ms = round(stt_time * 1000)
+        llm_ms = round(llm_time * 1000)
+        tts_ms = round(tts_time * 1000)
 
-    response = TurnResponse(
-        conversation_id=conversation_id,
-        turn_number=turn_number,
-        transcript=transcript,
-        response_text=response_text,
-        audio=audio_b64,
-        audio_parts=(audio_parts or None),
-        language=language,
-        provider_info={
-            "stt": f"{settings.stt_provider}/{settings.stt_model}",
-            "llm": f"{settings.llm_provider}/{settings.llm_model}",
-            "tts": voice_clone.tts_label(tts_report or None),
-            "mock_mode": settings.mock_mode,
-            # DUB1 observability: which flow produced this turn.
-            "mode": "dub" if is_dub else "chat",
-            "source_language": stt_lang,
-            # DUB3: how many dub sentence parts the queue carries (0 = chat).
-            "dub_sentences": len(dub_parts),
-        },
-        wer=scoring["wer"],
-        cer=scoring["cer"],
-        scored=scoring["scored"],
-        stt_ms=stt_ms,
-        llm_ms=llm_ms,
-        tts_ms=tts_ms,
-        total_ms=stt_ms + llm_ms + tts_ms,
-    )
+        response = TurnResponse(
+            conversation_id=conversation_id,
+            turn_number=turn_number,
+            transcript=transcript,
+            response_text=response_text,
+            audio=audio_b64,
+            audio_parts=(audio_parts or None),
+            language=language,
+            provider_info={
+                "stt": f"{settings.stt_provider}/{settings.stt_model}",
+                "llm": f"{settings.llm_provider}/{settings.llm_model}",
+                "tts": voice_clone.tts_label(tts_report or None),
+                "mock_mode": settings.mock_mode,
+                # DUB1 observability: which flow produced this turn.
+                "mode": "dub" if is_dub else "chat",
+                "source_language": stt_lang,
+                # DUB3: how many dub sentence parts the queue carries (0 = chat).
+                "dub_sentences": len(dub_parts),
+            },
+            wer=scoring["wer"],
+            cer=scoring["cer"],
+            scored=scoring["scored"],
+            stt_ms=stt_ms,
+            llm_ms=llm_ms,
+            tts_ms=tts_ms,
+            total_ms=stt_ms + llm_ms + tts_ms,
+        )
 
-    logger.info(
-        "[%s] Done | turn=%d | stt=%.2fs llm=%.2fs tts=%.2fs total=%.2fs",
-        request_id, turn_number,
-        stt_time, llm_time, tts_time,
-        stt_time + llm_time + tts_time,
-    )
+        logger.info(
+            "[%s] Done | turn=%d | stt=%.2fs llm=%.2fs tts=%.2fs total=%.2fs",
+            request_id, turn_number,
+            stt_time, llm_time, tts_time,
+            stt_time + llm_time + tts_time,
+        )
 
-    # --- 11. Structured JSONL log (non-blocking, best-effort) ---
-    log_turn(
-        request_id=request_id,
-        conversation_id=conversation_id,
-        language=language,
-        turn_number=turn_number,
-        stt_ms=stt_ms,
-        llm_ms=llm_ms,
-        tts_ms=tts_ms,
-        transcript_len=len(transcript),
-        response_len=len(response_text),
-        audio_bytes=len(audio_b64),
-        mock_mode=settings.mock_mode,
-    )
+        # --- 11. Structured JSONL log (non-blocking, best-effort) ---
+        log_turn(
+            request_id=request_id,
+            conversation_id=conversation_id,
+            language=language,
+            turn_number=turn_number,
+            stt_ms=stt_ms,
+            llm_ms=llm_ms,
+            tts_ms=tts_ms,
+            transcript_len=len(transcript),
+            response_len=len(response_text),
+            audio_bytes=len(audio_b64),
+            mock_mode=settings.mock_mode,
+        )
 
-    # --- 12. Clean up temp audio files ---
-    for _path in (raw_path, wav_path):
-        try:
-            _path.unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    return response
+        return response
+    finally:
+        _cleanup_audio(raw_path, wav_path)
 
 
 # =========================================================================
@@ -421,12 +489,12 @@ async def handle_turn_stream(
         raise HTTPException(status_code=400, detail="Dub mode (DUB1) accepts English source speech only.")
     stt_lang = "en" if is_dub else (source_language or language)
 
-    audio_bytes = await audio.read()
+    audio_bytes = await _read_bounded_audio(audio)
     if len(audio_bytes) == 0:
         raise HTTPException(status_code=400, detail="Empty audio file.")
     if len(audio_bytes) > settings.max_audio_size_mb * 1024 * 1024:
         raise HTTPException(status_code=413, detail=f"Audio too large. Max {settings.max_audio_size_mb} MB.")
-    estimated_duration = _get_audio_duration_seconds(audio_bytes, audio.content_type or "audio/wav")
+    estimated_duration = await _blocking(_get_audio_duration_seconds, audio_bytes, audio.content_type or "audio/wav")
     if estimated_duration > settings.max_audio_duration_seconds:
         raise HTTPException(status_code=413, detail=f"Audio too long ({estimated_duration:.1f}s). Max {settings.max_audio_duration_seconds}s.")
 
@@ -438,28 +506,39 @@ async def handle_turn_stream(
 
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     ext = "webm" if audio.content_type and "webm" in audio.content_type else "wav"
-    raw_path = settings.upload_dir / f"{request_id}_{conversation_id}_{language}_sraw.{ext}"
-    wav_path = settings.upload_dir / f"{request_id}_{conversation_id}_{language}_snorm.wav"
-    with open(raw_path, "wb") as f:
-        f.write(audio_bytes)
+    raw_path = settings.upload_dir / f"{request_id}_{language}_sraw.{ext}"
+    wav_path = settings.upload_dir / f"{request_id}_{language}_snorm.wav"
     try:
+        raw_path.write_bytes(audio_bytes)
         await _to_wav(raw_path, wav_path)
-    except Exception as e:
-        logger.error("[%s] Audio conversion failed: %s", request_id, str(e))
-        raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.")
+    except BaseException as exc:
+        _cleanup_audio(raw_path, wav_path)
+        if isinstance(exc, asyncio.CancelledError):
+            raise
+        logger.error("[%s] Audio conversion failed: %s", request_id, exc)
+        raise HTTPException(status_code=422, detail="Audio conversion failed. Please check your recording.") from exc
+
+    try:
+        await _blocking(_check_normalized_duration, wav_path)
+    except BaseException:
+        _cleanup_audio(raw_path, wav_path)
+        raise
 
     async def generate():
-        loop = asyncio.get_running_loop()
         runner = None
         t_all = time.time()
         try:
             t0 = time.time()
             try:
-                transcript = await loop.run_in_executor(None, transcribe, wav_path, stt_lang, "audio/wav")
+                transcript = await _blocking(transcribe, wav_path, stt_lang, "audio/wav")
             except Exception as e:
                 logger.error("[%s] Stream STT failed: %s", request_id, str(e))
                 yield _ndjson({"type": "error", "detail": "Speech transcription failed. Please try again."})
                 return
+            if not isinstance(transcript, str) or not transcript.strip():
+                yield _ndjson({"type": "error", "detail": "No speech detected. Please record a clear sentence and try again."})
+                return
+            transcript = transcript.strip()
             stt_ms = round((time.time() - t0) * 1000)
             yield _ndjson({"type": "meta", "request_id": request_id, "transcript": transcript,
                            "language": language, "mode": "dub" if is_dub else "chat",
@@ -513,7 +592,9 @@ async def handle_turn_stream(
                 session_manager.add_turn(conversation_id, "assistant", response_text)
                 audio_b64 = concat_wav_b64(parts_b64)
             else:
-                reply = await loop.run_in_executor(None, respond, conversation_id, transcript, language)
+                chat_llm_start = time.perf_counter()
+                reply = await _blocking(respond, conversation_id, transcript, language)
+                tr_ms = round((time.perf_counter() - chat_llm_start) * 1000)
                 # Pass an explicit report dict into synthesize_b64 on the
                 # worker thread so the provider label stays truthful after
                 # per-call fallbacks (thread-local take_last_report() would
@@ -523,15 +604,17 @@ async def handle_turn_stream(
                 def _synth_chat(text: str, lang: str) -> str:
                     return synthesize_b64(text, lang, report=tts_report)
 
-                audio_b64 = await loop.run_in_executor(None, _synth_chat, reply, language)
+                chat_tts_start = time.perf_counter()
+                audio_b64 = await _blocking(_synth_chat, reply, language)
+                ts_ms = round((time.perf_counter() - chat_tts_start) * 1000)
                 response_text, texts, parts_b64 = reply, [reply], [audio_b64]
                 yield _ndjson({"type": "part", "index": 0, "text": reply,
                                "audio": audio_b64,
                                "at_ms": round((time.time() - t_all) * 1000)})
 
             pipeline_ms = round((time.time() - t1) * 1000)
-            llm_ms = tr_ms if is_dub else pipeline_ms
-            tts_ms = ts_ms if is_dub else 0
+            llm_ms = tr_ms
+            tts_ms = ts_ms
             scoring = score_transcript(reference_text, transcript)
             turn_number = session_manager.get_turn_count(conversation_id)
             provider = {

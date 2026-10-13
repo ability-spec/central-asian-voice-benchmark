@@ -1,4 +1,4 @@
-"""Run the supplied Seed-VC CLI and both real worker protocols with fake models.
+"""Run the supplied Seed-VC CLI and the retained offload adapter protocol with fake models.
 
 The fixture is the project owner's inference_v2.py snapshot. Its main(), model
 loading orchestration, argument namespace and WAV save path execute unchanged.
@@ -7,18 +7,23 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
 
 import pytest
 
-from product.backend.config import settings
 from product.backend.services import voice_clone
-from test_route_b_worker import worker_setup  # noqa: F401
+from product.backend.services.route_b_worker import RouteBWorker
+
+ROUTEB = voice_clone._VENDORED_WRAPPER.parent
 
 
 @pytest.fixture
-def seed_setup(worker_setup, monkeypatch):
-    worker, sentences, tmp = worker_setup
+def seed_setup(tmp_path):
+    tmp = tmp_path
+    worker = RouteBWorker()
     seed = tmp / 'seed vc'
+    seed.mkdir()
+    (tmp / 'reference.wav').write_bytes(b'reference stub')
     shutil.copyfile(Path(__file__).parent/'fixtures/seedvc_inference_v2.py', seed/'inference_v2.py')
     (seed/'configs/v2').mkdir(parents=True)
     (seed/'configs/v2/vc_wrapper.yaml').write_text('{}')
@@ -77,34 +82,38 @@ class Model:
         assert self.mask.device == self.rotary_cache[0].device == 'cuda'
         assert self.features['voice'][0].device == 'cuda'
         assert self.features['alias'] is self.features['voice'][0]
-        # The other worker must already have parked Sayro before we convert.
-        events = [json.loads(s) for s in Path('../events.jsonl').read_text().splitlines()]
-        assert [e for e in events if e[0] == 'sayro'][-1] == ['sayro', 'cpu']
         event(['convert', {k:v for k,v in kw.items() if k not in ('source_audio_path','target_audio_path')}])
         yield None, (24000, [0.1]*100)
 ''')
-    runner = tmp/'wrapper.py'
-    source = runner.read_text()
-    source = source.replace("        event(['generate', text])", """        seed_device = Path('seed vc/seed-device.txt')
-        assert not seed_device.exists() or seed_device.read_text() == 'cpu'
-        event(['generate', text])""")
-    runner.write_text(source)
-    monkeypatch.setattr(voice_clone, '_route_b_worker', worker)
-    monkeypatch.setattr(voice_clone, '_VENDORED_WRAPPER', runner)
-    monkeypatch.setattr(settings, 'route_b_persistent_seedvc', True)
-    monkeypatch.setattr(settings, 'route_b_diffusion_steps', 15)
-    monkeypatch.setattr(settings, 'route_b_intelligibility', 0.8)
-    monkeypatch.setattr(settings, 'route_b_similarity', 0.8)
-    return worker, sentences, tmp, seed
+    source = seed / 'source.wav'
+    source.write_bytes(b'source stub')
+    items = seed / 'sources.json'
+    items.write_text(json.dumps([{'source': str(source), 'output': str(seed / 'out')}]))
+    cmd = [sys.executable, str(ROUTEB / 'seedvc_worker.py'),
+           '--inference-script', str(seed / 'inference_v2.py'),
+           '--source-list', str(items), '--target', str(tmp / 'reference.wav'),
+           '--diffusion-steps', '15', '--length-adjust', '1.0',
+           '--intelligibility-cfg-rate', '0.8', '--similarity-cfg-rate', '0.8']
+    yield worker, cmd, tmp, seed
+    worker.close()
 
 
-def test_two_requests_reuse_both_models_and_preserve_quality_args(seed_setup, caplog):
-    worker, sentences, tmp, seed = seed_setup
+def run_adapter(worker, cmd, seed, timeout=10):
+    result = worker.run(cmd, timeout, str(seed), voice_clone._build_child_env(),
+                        voice_clone._parse_wrapper_markers)
+    paths = list((seed / 'out').glob('*.wav'))
+    assert paths, 'Adapter acknowledged success without an output WAV'
+    for path in paths:
+        voice_clone._validate_wav_bytes(path.read_bytes())
+    return result
+
+
+def test_two_requests_reuse_adapter_model_and_preserve_quality_args(seed_setup, caplog):
+    worker, cmd, tmp, seed = seed_setup
     import logging
     caplog.set_level(logging.INFO)
-    for text in ('Salom dunyo.', 'Yaxshimisiz?'):
-        data = voice_clone.synthesize_local_clone(text, 'uz')
-        voice_clone._validate_wav_bytes(data)
+    for _ in range(2):
+        run_adapter(worker, cmd, seed)
         assert (seed/'seed-device.txt').read_text() == 'cpu'
     events = [json.loads(s) for s in (seed/'seed-events.jsonl').read_text().splitlines()]
     assert sum(e[0] == 'load' for e in events) == 1
@@ -119,8 +128,7 @@ def test_two_requests_reuse_both_models_and_preserve_quality_args(seed_setup, ca
     assert 'seedvc_cache=hit' in caplog.text
     assert 'seedvc_conversion_s=' in caplog.text
     assert 'seedvc_offload_s=' in caplog.text
-    assert 'sayro_cache=hit' in caplog.text
-    voice_clone.close_route_b_worker()
+    worker.close()
     assert worker.proc is None
     if os.name != 'nt':
         pid = next(e[1] for e in events if e[0] == 'load')
@@ -128,40 +136,39 @@ def test_two_requests_reuse_both_models_and_preserve_quality_args(seed_setup, ca
         assert not stat.exists() or stat.read_text().split()[2] == 'Z'
 
 
-def test_offload_failure_discards_both_workers(seed_setup):
-    worker, _, tmp, seed = seed_setup
+def test_offload_failure_discards_adapter_worker(seed_setup):
+    worker, cmd, tmp, seed = seed_setup
     (seed/'fail-offload').touch()
     with pytest.raises(RuntimeError, match='fixture offload failure'):
-        voice_clone.synthesize_local_clone('Salom.', 'uz')
+        run_adapter(worker, cmd, seed)
     assert worker.proc is None
     # Clear only the test's simulated hardware failure and cross-process marker.
     (seed/'fail-offload').unlink()
     (seed/'seed-device.txt').unlink()
-    voice_clone._validate_wav_bytes(voice_clone.synthesize_local_clone('Salom.', 'uz'))
+    run_adapter(worker, cmd, seed)
     events = [json.loads(s) for s in (seed/'seed-events.jsonl').read_text().splitlines()]
     assert sum(e[0] == 'load' for e in events) == 2
 
 
 def test_adapter_invalidates_changed_script(seed_setup):
-    worker, _, _, seed = seed_setup
-    voice_clone.synthesize_local_clone('Salom.', 'uz')
+    worker, cmd, _, seed = seed_setup
+    run_adapter(worker, cmd, seed)
     script = seed/'inference_v2.py'
     script.write_text(script.read_text()+'\n# new revision\n')
-    voice_clone.synthesize_local_clone('Salom.', 'uz')
+    run_adapter(worker, cmd, seed)
     events = [json.loads(s) for s in (seed/'seed-events.jsonl').read_text().splitlines()]
     assert sum(e[0] == 'load' for e in events) == 2
 
 
-def test_seed_conversion_timeout_discards_process_tree(seed_setup, monkeypatch):
-    worker, _, _, seed = seed_setup
-    voice_clone.synthesize_local_clone('Salom.', 'uz')
+def test_seed_conversion_timeout_discards_process_tree(seed_setup):
+    worker, cmd, _, seed = seed_setup
+    run_adapter(worker, cmd, seed)
     # Trigger a long conversion only after the first job loaded the models.
     script = seed/'inference_v2.py'
     script.write_text(script.read_text().replace(
         'def main(args):', 'def main(args):\n    time.sleep(120)'))
-    monkeypatch.setattr(settings, 'local_clone_timeout_s', 1)
     with pytest.raises(RuntimeError, match='timed out'):
-        voice_clone.synthesize_local_clone('Salom.', 'uz')
+        run_adapter(worker, cmd, seed, timeout=1)
     assert worker.proc is None
     if os.name != 'nt':
         events = [json.loads(s) for s in (seed/'seed-events.jsonl').read_text().splitlines()]
@@ -170,11 +177,11 @@ def test_seed_conversion_timeout_discards_process_tree(seed_setup, monkeypatch):
             assert not stat.exists() or stat.read_text().split()[2] == 'Z'
 
 
-def test_quality_setting_change_reuses_seed_model(seed_setup, monkeypatch):
-    _, _, _, seed = seed_setup
-    voice_clone.synthesize_local_clone('Salom.', 'uz')
-    monkeypatch.setattr(settings, 'route_b_diffusion_steps', 12)
-    voice_clone.synthesize_local_clone('Salom.', 'uz')
+def test_quality_setting_change_reuses_seed_model(seed_setup):
+    worker, cmd, _, seed = seed_setup
+    run_adapter(worker, cmd, seed)
+    cmd[cmd.index('--diffusion-steps') + 1] = '12'
+    run_adapter(worker, cmd, seed)
     events = [json.loads(s) for s in (seed/'seed-events.jsonl').read_text().splitlines()]
     assert sum(e[0] == 'load' for e in events) == 1
     assert [e[1]['diffusion_steps'] for e in events if e[0] == 'convert'] == [15, 12]

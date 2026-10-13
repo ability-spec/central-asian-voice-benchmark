@@ -4,6 +4,7 @@ Health-check endpoint.
 
 import time
 import logging
+import shutil
 
 from fastapi import APIRouter
 
@@ -28,4 +29,8 @@ async def health():
         llm_provider=f"{settings.llm_provider}/{settings.llm_model}",
         tts_provider=f"{settings.tts_provider}/{settings.tts_model}",
         uptime_seconds=time.time() - _start_time,
+        audio_tools_ready=bool(shutil.which("ffmpeg") and shutil.which("ffprobe")),
+        max_audio_duration_seconds=settings.max_audio_duration_seconds,
+        max_audio_size_mb=settings.max_audio_size_mb,
+        max_turns_per_session=settings.max_turns_per_session,
     )
