@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "BirOvoz Local",
+  "version": "0.1.0",
+  "description": "English → Uzbek/Kazakh через локальный BirOvoz. Модели и ключи остаются в backend.",
+  "minimum_chrome_version": "116",
+  "permissions": ["sidePanel", "storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_title": "Открыть BirOvoz"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' http://127.0.0.1:* http://localhost:*; media-src 'self' blob:; base-uri 'none'; frame-ancestors 'none'"
+  }
+}
