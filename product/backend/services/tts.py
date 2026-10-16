@@ -16,7 +16,7 @@ from typing import Optional
 from openai import OpenAI, APIError
 
 from product.backend.config import settings
-from product.backend.services import voice_clone
+from product.backend.services import voice_clone, wav_audio
 
 logger = logging.getLogger(__name__)
 
@@ -214,34 +214,19 @@ def concat_wav_b64(parts_b64: list) -> str:
     """DUB3: join base64 WAV parts into one valid base64 WAV.
 
     Used to keep the legacy single-`audio` field correct (full dub) while
-    `audio_parts` carries the per-sentence queue. Falls back to the first
-    part if any input is not a parseable/consistent WAV, so the backward
-    compatible field is never worse than a valid clip.
+    `audio_parts` carries the per-sentence queue; replay and Download WAV use
+    it. Parts may differ in encoding or rate (local clone float WAV at
+    22,050 Hz next to an OpenAI fallback at 24,000 Hz); they are converted and
+    joined by wav_audio.concat_wavs. Only an undecodable part falls back to
+    the first part, so the field is never worse than a valid clip.
     """
     if not parts_b64:
         return ""
     if len(parts_b64) == 1:
         return parts_b64[0]
-    frames = []
-    params = None
     try:
-        for blob_b64 in parts_b64:
-            with wave.open(io.BytesIO(base64.b64decode(blob_b64)), "rb") as wf:
-                p = wf.getparams()
-                if params is None:
-                    params = (p.nchannels, p.sampwidth, p.framerate)
-                elif (p.nchannels, p.sampwidth, p.framerate) != params:
-                    logger.warning("concat_wav_b64: inconsistent WAV params; "
-                                   "falling back to first part")
-                    return parts_b64[0]
-                frames.append(wf.readframes(wf.getnframes()))
+        joined = wav_audio.concat_wavs([base64.b64decode(blob) for blob in parts_b64])
     except Exception as e:  # undecodable part etc. — keep something valid
         logger.warning("concat_wav_b64: %s; falling back to first part", e)
         return parts_b64[0]
-    out = io.BytesIO()
-    with wave.open(out, "wb") as wf:
-        wf.setnchannels(params[0])
-        wf.setsampwidth(params[1])
-        wf.setframerate(params[2])
-        wf.writeframes(b"".join(frames))
-    return base64.b64encode(out.getvalue()).decode("ascii")
+    return base64.b64encode(joined).decode("ascii")

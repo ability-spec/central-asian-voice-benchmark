@@ -136,10 +136,14 @@ def test_concat_wav_frames_sum_and_valid():
         assert wf.getnframes() == int((0.5 + 0.25 + 1.0) * 16000)
 
 
-def test_concat_wav_falls_back_on_inconsistent_or_garbage():
+def test_concat_wav_joins_mixed_rates_and_falls_back_only_on_garbage():
+    # Mixed rates (e.g. clone 22,050 Hz + OpenAI fallback) must keep every
+    # sentence: resampled to the highest rate, not truncated to part one.
     mismatched = tts_module.concat_wav_b64(
         [_mk_wav_b64(22050, 0.5), _mk_wav_b64(16000, 0.5)])
-    assert mismatched == _mk_wav_b64(22050, 0.5)  # first part, valid audio
+    with wave.open(io.BytesIO(base64.b64decode(mismatched)), "rb") as wf:
+        assert wf.getframerate() == 22050
+        assert wf.getnframes() == int(0.5 * 22050) * 2
     garbage = base64.b64encode(b"not-a-wav").decode()
     assert tts_module.concat_wav_b64([garbage, garbage]) == garbage
     assert tts_module.concat_wav_b64([]) == ""

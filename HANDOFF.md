@@ -1,5 +1,36 @@
 # BirOvoz — MVP handoff
 
+## Status and next steps (as of 2026-10-16)
+
+Dates are when the work first landed on `master` (from Git history). Labels:
+**Verified (CPU)** = covered by the CPU regression suite with provider/model substitutes;
+**Owner-reported** = recorded in `WORK_STATUS.md` from the owner's Windows/NVIDIA machine,
+not re-run in CI; **Pending** = not yet done.
+
+| Area | Status | First on `master` | Note |
+| --- | --- | --- | --- |
+| FastAPI + static HTML demo | Verified (CPU) | 2026-08-27 | Single machine, in-memory sessions |
+| English → Uzbek/Kazakh dubbing (DUB1–DUB4), NDJSON streaming, barge-in | Verified (CPU) | 2026-09-10 – 2026-09-11 | Live OpenAI STT/translation/TTS not verified in CI |
+| ElevenLabs voice + consent-gated enrollment (VC1) | Verified (CPU) | 2026-09-13 | Optional provider |
+| Uzbek local clone, Sayro → Seed-VC (CP5), persistent daemon | Owner-reported | 2026-09-15; daemon 2026-09-26 | 3 local calls on 2026-10-12: cold 34.7 s, warm 9.2–10.7 s |
+| 10-step listening-approved profile | Owner-reported | 2026-10-12 | `.env.example` aligned on 2026-10-16 |
+| Stop / New session, upload, Download WAV, preflight | Verified (CPU) | 2026-10-05 | Full-dub WAV keeps every sentence since 2026-10-16 |
+| Cancellation and stale-callback fixes | Verified (CPU) | 2026-10-06, 2026-10-12 | Real-browser check pending |
+| Chrome side panel (MV3) | Verified (CPU, Node) | 2026-10-13 | Not yet loaded in real Chrome by CI |
+| Server binds 127.0.0.1 by default | Verified (CPU) | 2026-10-16 | Set `HOST=0.0.0.0` only on a trusted network |
+| Minimal "Voice workspace" UI | Pending merge | — | On branch `demo` (2026-10-13); `master` still serves the older page |
+| Kazakh local clone | Not started | — | Kazakh uses OpenAI voices |
+| Windows/NVIDIA release acceptance (below) | Pending | — | Required before calling the demo released |
+
+Next steps, in order (target dates are proposals for the owner to adjust):
+
+| # | Step | Proposed target | Done when |
+| --- | --- | --- | --- |
+| 1 | Run the five-step Windows/NVIDIA acceptance below with real keys | 2026-10-23 | Results recorded: EN→UZ and EN→KK audio, actual provider, cold/warm time, cancel with no stale audio |
+| 2 | Review and merge the `demo` UI into `master` | 2026-10-23 | `/` serves the new page; CPU suite green |
+| 3 | Re-check Download WAV on a real multi-sentence local-clone dub | 2026-10-23 | Downloaded duration equals the played audio |
+| 4 | Decide on Kazakh local cloning (needs a verified Kazakh voice path) | 2026-11-06 | Decision recorded; no claim before verification |
+
 ## Current state
 
 BirOvoz is a working FastAPI + static HTML voice demo for English speech →
