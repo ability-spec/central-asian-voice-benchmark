@@ -9,6 +9,14 @@ pipeline with streaming English-to-Uzbek/Kazakh dubbing.
 - [Local setup and provider/model configuration](product/README.md)
 - [Current handoff and release acceptance](HANDOFF.md)
 
+- [Architecture and data flows](docs/architecture.md)
+
+## Architecture at a glance
+
+![BirOvoz system architecture](docs/assets/architecture.svg)
+
+See [the architecture notes](docs/architecture.md) for provider boundaries, the separate benchmark flow, and what still requires real-provider verification.
+
 ## Quick start
 
 From the repository root, with Python 3.11+ and ffmpeg on PATH:
