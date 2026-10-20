@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="1640" height="1100" viewBox="0 0 1640 1100" role="img" aria-labelledby="title desc">
+  <title id="title">BirOvoz system architecture</title>
+  <desc id="desc">Architecture overview of English-to-Uzbek and Kazakh dubbing, provider routing, optional Uzbek-only local voice cloning, and the separate prompted benchmark flow.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowTeal" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#0f9b8e"/>
+    </marker>
+    <style>
+      text { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif; fill: #172b4d; }
+      .muted { fill: #64748b; }
+      .tiny { font-size: 13px; }
+      .small { font-size: 15px; }
+      .body { font-size: 16px; }
+      .head { font-size: 19px; font-weight: 700; }
+      .eyebrow { font-size: 13px; font-weight: 700; letter-spacing: 1.4px; }
+      .card { fill: #ffffff; stroke: #d7e0ec; stroke-width: 1.5; }
+      .connector { fill: none; stroke: #64748b; stroke-width: 2.4; marker-end: url(#arrow); }
+      .connector-teal { fill: none; stroke: #0f9b8e; stroke-width: 2.4; marker-end: url(#arrowTeal); }
+      .pillText { font-size: 12px; font-weight: 700; letter-spacing: .4px; }
+    </style>
+  </defs>
+
+  <rect width="1640" height="1100" rx="24" fill="#f5f8fc"/>
+  <rect x="0" y="0" width="1640" height="132" rx="24" fill="#ffffff"/>
+  <rect x="0" y="108" width="1640" height="24" fill="#ffffff"/>
+  <text x="54" y="55" font-size="34" font-weight="800">BirOvoz</text>
+  <text x="54" y="88" font-size="18" fill="#50627d">System architecture · speech, dubbing and evaluation</text>
+  <rect x="1262" y="33" width="322" height="38" rx="19" fill="#e6f6f3" stroke="#b6e6dc"/>
+  <circle cx="1284" cy="52" r="5" fill="#0f9b8e"/>
+  <text x="1300" y="57" font-size="14" font-weight="700" fill="#087e73">MAINTAINED BY KOBULJON ERKINJONOV</text>
+  <line x1="54" y1="132" x2="1586" y2="132" stroke="#dce4ef"/>
+
+  <text x="54" y="166" class="eyebrow" fill="#526782">01 / MAIN DUBBING FLOW</text>
+  <text x="1584" y="166" text-anchor="end" class="small muted">English speech → Uzbek / Kazakh audio</text>
+
+  <path class="connector" d="M270 294 H297"/>
+  <path class="connector" d="M520 294 H547"/>
+  <path class="connector" d="M747 294 H774"/>
+  <path class="connector" d="M984 294 H1011"/>
+  <path class="connector" d="M1271 294 H1298"/>
+
+  <g>
+    <rect class="card" x="54" y="192" width="216" height="205" rx="15"/>
+    <path d="M69 192 H255 Q270 192 270 207 V217 H54 V207 Q54 192 69 192Z" fill="#e7eefb"/>
+    <circle cx="78" cy="241" r="14" fill="#d6e4ff"/>
+    <path d="M75 234 Q78 230 81 234 V243 Q78 247 75 243Z M70 239 Q70 249 78 249 Q86 249 86 239 M78 249 V253 M73 253 H83" fill="none" stroke="#315fb4" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="100" y="247" class="head">Audio input</text>
+    <text x="72" y="280" class="body">Microphone capture</text>
+    <text x="72" y="305" class="body">English audio upload</text>
+    <text x="72" y="340" class="small muted">Browser UI</text>
+    <rect x="72" y="355" width="116" height="24" rx="12" fill="#e7eefb"/>
+    <text x="130" y="371" text-anchor="middle" class="pillText" fill="#315fb4">SOURCE: EN</text>
+  </g>
+
+  <g>
+    <rect class="card" x="304" y="192" width="216" height="205" rx="15"/>
+    <path d="M319 192 H505 Q520 192 520 207 V217 H304 V207 Q304 192 319 192Z" fill="#e4f5f2"/>
+    <circle cx="328" cy="241" r="14" fill="#c4eee5"/>
+    <path d="M321 236 H335 M321 241 H332 M321 246 H329" stroke="#087e73" stroke-width="2" stroke-linecap="round"/>
+    <text x="350" y="247" class="head">Validate &amp; prep</text>
+    <text x="322" y="280" class="body">Length and empty-audio</text>
+    <text x="322" y="302" class="body">checks</text>
+    <text x="322" y="330" class="body">FFmpeg normalization</text>
+    <text x="322" y="363" class="small muted">FastAPI · temp-file cleanup</text>
+  </g>
+
+  <g>
+    <rect class="card" x="554" y="192" width="193" height="205" rx="15"/>
+    <path d="M569 192 H732 Q747 192 747 207 V217 H554 V207 Q554 192 569 192Z" fill="#e8eafa"/>
+    <circle cx="578" cy="241" r="14" fill="#d8dcfb"/>
+    <path d="M571 242 L575 236 L579 246 L583 237 L587 242" fill="none" stroke="#525ac7" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="600" y="247" class="head">Speech-to-text</text>
+    <text x="573" y="282" class="body">English transcript</text>
+    <text x="573" y="312" class="small muted">Configured STT</text>
+    <text x="573" y="334" class="small muted">provider</text>
+    <rect x="573" y="354" width="126" height="24" rx="12" fill="#e8eafa"/>
+    <text x="636" y="370" text-anchor="middle" class="pillText" fill="#525ac7">STT</text>
+  </g>
+
+  <g>
+    <rect class="card" x="781" y="192" width="203" height="205" rx="15"/>
+    <path d="M796 192 H969 Q984 192 984 207 V217 H781 V207 Q781 192 796 192Z" fill="#f0eafb"/>
+    <circle cx="805" cy="241" r="14" fill="#e5d7fb"/>
+    <path d="M798 236 H812 V246 H798Z M801 233 H809" fill="none" stroke="#8251b8" stroke-width="1.7" stroke-linejoin="round"/>
+    <text x="827" y="247" class="head">Translation</text>
+    <text x="800" y="282" class="body">English text → target</text>
+    <text x="800" y="304" class="body">language text</text>
+    <text x="800" y="338" class="small muted">LLM translation stage</text>
+    <rect x="800" y="354" width="144" height="24" rx="12" fill="#f0eafb"/>
+    <text x="872" y="370" text-anchor="middle" class="pillText" fill="#8251b8">EN → UZ / KK</text>
+  </g>
+
+  <g>
+    <rect class="card" x="1018" y="192" width="253" height="205" rx="15"/>
+    <path d="M1033 192 H1256 Q1271 192 1271 207 V217 H1018 V207 Q1018 192 1033 192Z" fill="#fff1db"/>
+    <circle cx="1042" cy="241" r="14" fill="#ffe2ad"/>
+    <path d="M1035 244 V238 Q1035 234 1039 234 H1045 Q1049 234 1049 238 V244 M1038 247 H1046" fill="none" stroke="#a76505" stroke-width="1.7" stroke-linecap="round"/>
+    <text x="1064" y="247" class="head">Voice synthesis</text>
+    <text x="1037" y="280" class="body">OpenAI / Standard</text>
+    <text x="1037" y="303" class="body">ElevenLabs (optional)</text>
+    <text x="1037" y="335" class="small muted">Provider routing + fallback</text>
+    <rect x="1037" y="354" width="172" height="24" rx="12" fill="#fff1db"/>
+    <text x="1123" y="370" text-anchor="middle" class="pillText" fill="#a76505">SENTENCE-LEVEL TTS</text>
+  </g>
+
+  <g>
+    <rect class="card" x="1305" y="192" width="281" height="205" rx="15"/>
+    <path d="M1320 192 H1571 Q1586 192 1586 207 V217 H1305 V207 Q1305 192 1320 192Z" fill="#e1f5e8"/>
+    <circle cx="1329" cy="241" r="14" fill="#c5efd5"/>
+    <path d="M1322 236 L1329 232 L1336 236 V244 L1329 248 L1322 244Z M1329 232 V240 M1322 236 L1329 240 L1336 236 M1329 240 V248" fill="none" stroke="#16834a" stroke-width="1.4" stroke-linejoin="round"/>
+    <text x="1351" y="247" class="head">Stream &amp; playback</text>
+    <text x="1324" y="280" class="body">NDJSON ordered parts</text>
+    <text x="1324" y="303" class="body">Play, stop, replace turn</text>
+    <text x="1324" y="326" class="body">Replay and WAV export</text>
+    <rect x="1324" y="354" width="125" height="24" rx="12" fill="#e1f5e8"/>
+    <text x="1386" y="370" text-anchor="middle" class="pillText" fill="#16834a">USER OUTPUT</text>
+  </g>
+
+  <path class="connector-teal" d="M1144 397 V426"/>
+  <g>
+    <rect x="1018" y="430" width="568" height="127" rx="15" fill="#effaf8" stroke="#8bd7c9" stroke-width="1.5"/>
+    <rect x="1036" y="447" width="141" height="25" rx="12" fill="#d3f3ec"/>
+    <text x="1106" y="464" text-anchor="middle" class="pillText" fill="#087e73">OPTIONAL ROUTE B</text>
+    <text x="1037" y="496" class="head">Local Uzbek voice clone</text>
+    <text x="1037" y="520" class="body">External wrapper: Sayro → Seed-VC subprocess</text>
+    <text x="1037" y="542" class="small muted">Uzbek only · models and reference WAV stay outside Git</text>
+    <rect x="1386" y="447" width="180" height="27" rx="13" fill="#fff2d7" stroke="#f2d08b"/>
+    <text x="1476" y="465" text-anchor="middle" class="pillText" fill="#936006">NOT KAZAKH-VERIFIED</text>
+  </g>
+
+  <line x1="54" y1="589" x2="1586" y2="589" stroke="#dce4ef"/>
+  <text x="54" y="622" class="eyebrow" fill="#526782">02 / PROMPTED BENCHMARK FLOW</text>
+  <text x="1584" y="622" text-anchor="end" class="small muted">Separate evaluation path · no training or automatic rerun</text>
+
+  <path class="connector" d="M400 744 H426"/>
+  <path class="connector" d="M788 744 H814"/>
+  <path class="connector" d="M1176 744 H1202"/>
+
+  <g>
+    <rect class="card" x="54" y="650" width="346" height="193" rx="15"/>
+    <rect x="54" y="650" width="8" height="193" rx="4" fill="#315fb4"/>
+    <text x="80" y="685" class="head">Reference prompt</text>
+    <text x="80" y="715" class="body">GET /api/prompts?language=uz|kk</text>
+    <text x="80" y="747" class="small muted">Frozen prompt manifest</text>
+    <text x="80" y="770" class="small muted">100 prompts per language</text>
+    <rect x="80" y="795" width="141" height="25" rx="12" fill="#e7eefb"/>
+    <text x="150" y="812" text-anchor="middle" class="pillText" fill="#315fb4">REFERENCE TEXT</text>
+  </g>
+
+  <g>
+    <rect class="card" x="432" y="650" width="356" height="193" rx="15"/>
+    <rect x="432" y="650" width="8" height="193" rx="4" fill="#0f9b8e"/>
+    <text x="458" y="685" class="head">Target-language audio</text>
+    <text x="458" y="715" class="body">Upload recording + reference_text</text>
+    <text x="458" y="747" class="small muted">POST /api/turn</text>
+    <text x="458" y="770" class="small muted">Opt-in benchmark panel</text>
+    <rect x="458" y="795" width="131" height="25" rx="12" fill="#e4f5f2"/>
+    <text x="523" y="812" text-anchor="middle" class="pillText" fill="#087e73">UZ / KK AUDIO</text>
+  </g>
+
+  <g>
+    <rect class="card" x="820" y="650" width="356" height="193" rx="15"/>
+    <rect x="820" y="650" width="8" height="193" rx="4" fill="#8251b8"/>
+    <text x="846" y="685" class="head">Score and inspect</text>
+    <text x="846" y="715" class="body">Transcript vs reference</text>
+    <text x="846" y="744" class="body">WER / CER · stage latency</text>
+    <text x="846" y="773" class="small muted">Provider identity + honest MOCK badge</text>
+    <rect x="846" y="795" width="125" height="25" rx="12" fill="#f0eafb"/>
+    <text x="908" y="812" text-anchor="middle" class="pillText" fill="#8251b8">PER-RECORDING</text>
+  </g>
+
+  <g>
+    <rect class="card" x="1208" y="650" width="378" height="193" rx="15"/>
+    <rect x="1208" y="650" width="8" height="193" rx="4" fill="#a76505"/>
+    <text x="1234" y="685" class="head">Frozen leaderboard</text>
+    <text x="1234" y="715" class="body">GET /api/leaderboard</text>
+    <text x="1234" y="747" class="small muted">Read-only aggregate research results</text>
+    <text x="1234" y="770" class="small muted">Does not recompute from uploads</text>
+    <rect x="1234" y="795" width="107" height="25" rx="12" fill="#fff1db"/>
+    <text x="1287" y="812" text-anchor="middle" class="pillText" fill="#a76505">FROZEN DATA</text>
+  </g>
+
+  <rect x="54" y="878" width="1532" height="163" rx="16" fill="#ffffff" stroke="#d7e0ec" stroke-width="1.5"/>
+  <text x="80" y="912" class="eyebrow" fill="#526782">RUNTIME BOUNDARIES &amp; VERIFICATION</text>
+  <circle cx="86" cy="944" r="5" fill="#0f9b8e"/>
+  <text x="101" y="949" class="small">Single-machine FastAPI demo · in-memory sessions · one Uvicorn worker</text>
+  <circle cx="86" cy="973" r="5" fill="#315fb4"/>
+  <text x="101" y="978" class="small">CPU regression tests use substitutes; they do not prove live voice quality or GPU compatibility</text>
+  <circle cx="86" cy="1002" r="5" fill="#a76505"/>
+  <text x="101" y="1007" class="small">Secrets, model checkpoints, reference audio and external voice-lab assets stay outside version control</text>
+  <line x1="1090" y1="927" x2="1090" y2="1015" stroke="#dce4ef"/>
+  <text x="1120" y="950" class="small" font-weight="700">Maintainer</text>
+  <text x="1120" y="977" class="body">Kobuljon Erkinjonov</text>
+  <text x="1120" y="1003" class="small muted">@ability-spec · BirOvoz</text>
+  <text x="1584" y="1075" text-anchor="end" class="tiny muted">Architecture based on repository documentation · verify HANDOFF.md before release</text>
+</svg>
