@@ -44,6 +44,11 @@ router = APIRouter(prefix="/api", tags=["turn"])
 
 AUDIO_CONVERSION_TIMEOUT_S = 30
 
+def _total_stage_ms(stt_ms: int, llm_ms: int, tts_ms: int) -> int:
+    """Return the documented total as the sum of stage latencies."""
+    return stt_ms + llm_ms + tts_ms
+
+
 # Allowed audio MIME types
 ALLOWED_AUDIO_TYPES = {
     "audio/wav",
@@ -379,7 +384,7 @@ async def handle_turn(
             stt_ms=stt_ms,
             llm_ms=llm_ms,
             tts_ms=tts_ms,
-            total_ms=stt_ms + llm_ms + tts_ms,
+            total_ms=_total_stage_ms(stt_ms, llm_ms, tts_ms),
         )
 
         logger.info(
@@ -546,7 +551,6 @@ async def handle_turn_stream(
 
             texts, parts_b64, tr_ms, ts_ms = [], [], 0, 0
             tts_report: dict = {}
-            t1 = time.time()
             if is_dub:
                 sents = split_sentences(transcript) or [transcript]
                 per_part_reports: list = [dict() for _ in sents]
@@ -612,7 +616,6 @@ async def handle_turn_stream(
                                "audio": audio_b64,
                                "at_ms": round((time.time() - t_all) * 1000)})
 
-            pipeline_ms = round((time.time() - t1) * 1000)
             llm_ms = tr_ms
             tts_ms = ts_ms
             scoring = score_transcript(reference_text, transcript)
@@ -632,7 +635,7 @@ async def handle_turn_stream(
                            "language": language, "provider_info": provider,
                            "wer": scoring["wer"], "cer": scoring["cer"], "scored": scoring["scored"],
                            "stt_ms": stt_ms, "llm_ms": llm_ms, "tts_ms": tts_ms,
-                           "total_ms": stt_ms + pipeline_ms})
+                           "total_ms": _total_stage_ms(stt_ms, llm_ms, tts_ms)})
             log_turn(
                 request_id=request_id, conversation_id=conversation_id,
                 language=language, turn_number=turn_number, stt_ms=stt_ms,

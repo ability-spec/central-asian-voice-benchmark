@@ -13,6 +13,7 @@ out-of-repo config (settings.voice_config_path). Local-clone reference WAVs
 also stay outside the repo and are never uploaded through this API.
 """
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
@@ -59,7 +60,9 @@ async def enroll_voice(
             detail="Voice enrollment unavailable: ELEVENLABS_API_KEY is not configured.",
         )
     try:
-        result = voice_clone.enroll(audio, consent=consent, name=name)
+        result = await asyncio.to_thread(
+            voice_clone.enroll, audio, consent=consent, name=name
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
